@@ -1,4 +1,4 @@
 streamlit
 mistralai
 pdfminer.six
- python-dotenv
+python-dotenv
