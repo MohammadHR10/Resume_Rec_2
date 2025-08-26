@@ -129,53 +129,6 @@ Required environment variables in `.env` file:
 mistral_api=your_mistral_api_key_here
 ```
 
-## Troubleshooting
-
-### Common Issues
-
-1. **Port already in use:**
-
-   ```bash
-   # Try different port
-   uvicorn main:app --reload --port 8889
-   ```
-
-2. **Missing dependencies:**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **API key not found:**
-
-   - Ensure `.env` file exists in project root
-   - Check that `mistral_api` is correctly set in `.env`
-
-4. **PDF extraction fails:**
-   - Ensure PDF files are not password-protected
-   - Check that PDF contains readable text (not just images)
-
-### Performance Tips
-
-1. **Install watchdog for better development experience:**
-
-   ```bash
-   pip install watchdog
-   ```
-
-2. **For production deployment:**
-   ```bash
-   uvicorn main:app --host 0.0.0.0 --port 8888
-   ```
-
 ## License
 
 MIT License - see LICENSE file for details.
-
-## Support
-
-For issues or questions:
-
-1. Check the troubleshooting section above
-2. Ensure all dependencies are correctly installed
-3. Verify your Mistral AI API key is valid
