@@ -1,10 +1,29 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
+from app import Evaluation, build_eval_prompt
+import json
+import re
 
 app = FastAPI(title="Resume Recommender API")
 
-@app.post("/recommend")
+def extract_json_from_response(text: str) -> dict:
+    """Extract JSON from AI response"""
+    json_pattern = r'\{[\s\S]*\}'
+    match = re.search(json_pattern, text)
+    
+    if match:
+        json_str = match.group(0)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Clean up common issues
+            cleaned = re.sub(r',(\s*[}\]])', r'\1', json_str.strip())
+            return json.loads(cleaned)
+    else:
+        raise ValueError("No JSON found in response")
+
+@app.post("/recommend", response_model=Evaluation)
 async def recommend_resume(
     job_title: str = Form(...),
     department: str = Form(...),
@@ -13,35 +32,23 @@ async def recommend_resume(
 ):
     try:
         resume_text = extract_text_from_pdf(resume_file.file)
-
-        prompt = f"""
-You are an expert hiring manager evaluating candidates for this specific role.
-
-JOB REQUIREMENTS:
-Title: {job_title}
-Department: {department}
-Description: {job_description}
-
-CANDIDATE RESUME:
-{resume_text}
-
-Please provide a comprehensive evaluation with:
-
-1. **Overall Score: X/10** 
-2. **Key Strengths:** (3-4 specific points from their resume)
-3. **Potential Concerns:** (2-3 areas where they might not be perfect fit)
-4. **Specific Skills Match:** How their technical skills align with job requirements
-5. **Experience Relevance:** How their work experience relates to this role
-6. **Recommendation:** Hire/Consider/Pass and why
-
-Be specific to THIS candidate - mention their name, specific projects, and actual experience. Avoid generic responses.
-"""
-
+        prompt = build_eval_prompt(job_title, department, job_description, resume_text)
         result = call_mistral(prompt)
-        if "choices" in result:
-            return {"recommendation": result["choices"][0]["message"]["content"]}
-        else:
-            return {"error": "No valid response from Mistral", "details": result}
-
+        
+        if "choices" not in result or not result["choices"]:
+            raise HTTPException(status_code=502, detail="No response from Mistral AI")
+            
+        raw_text = result["choices"][0]["message"]["content"]
+        json_data = extract_json_from_response(raw_text)
+        evaluation = Evaluation(**json_data)
+        
+        # Ensure job fields are set
+        evaluation.job_title = job_title
+        evaluation.department = department
+        
+        return evaluation
+        
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=422, detail=f"JSON parsing failed: {str(e)}")
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
