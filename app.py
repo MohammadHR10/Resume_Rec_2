@@ -16,13 +16,19 @@ class Evaluation(BaseModel):
     department: str
 
     
+resume_criteria = {}
 
 st.set_page_config(page_title="Resume Recommender", layout="wide")
 st.title("📄 Resume Recommender with Mistral AI")
 
 # Job description inputs
 job_title = st.text_input("Job Title")
+
+resume_criteria["job_title"] = job_title
+
 department = st.selectbox("Department", ["Engineering", "Marketing", "Design", "Data", "Other"])
+
+
 job_description = st.text_area("Job Description", height=200)
 
 uploaded_files = st.file_uploader("Upload Resumes (PDF only)", type="pdf", accept_multiple_files=True)
