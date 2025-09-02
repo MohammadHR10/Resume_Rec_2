@@ -3,7 +3,7 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-print("API KEY:", os.getenv("mistral_api"))
+#print("API KEY:", os.getenv("mistral_api"))
 
 api_key = os.getenv("mistral_api")
 API_URL = "https://api.mistral.ai/v1/chat/completions"
