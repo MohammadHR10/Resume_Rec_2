@@ -28,11 +28,12 @@ async def recommend_resume(
     job_title: str = Form(...),
     department: str = Form(...),
     job_description: str = Form(...),
+    custom_considerations: str = Form(...),
     resume_file: UploadFile = File(...)
 ):
     try:
         resume_text = extract_text_from_pdf(resume_file.file)
-        prompt = build_eval_prompt(job_title, department, job_description, resume_text)
+        prompt = build_eval_prompt(job_title, department, job_description, custom_considerations, resume_text)
         result = call_mistral(prompt)
         
         if "choices" not in result or not result["choices"]:
@@ -45,6 +46,7 @@ async def recommend_resume(
         # Ensure job fields are set
         evaluation.job_title = job_title
         evaluation.department = department
+        evaluation.custom_considerations = custom_considerations
         
         return evaluation
         

@@ -71,8 +71,8 @@ with st.expander("Add Custom Field"):
         placeholder=(
             "Examples:\n"
             "- If anything is provided here and it's relevant to the JD, include it in the evaluation.\n"
-            "- Prefer candidates who previously worked with our organization.\n"
-            "- If this field is present and strong, bump overall assessment; otherwise ignore."
+            #"- Prefer candidates who previously worked with our organization.\n"
+            #"- If this field is present and strong, bump overall assessment; otherwise ignore."
         ),
         height=120
     )
@@ -143,16 +143,24 @@ def schema_text(job_title: str, department: str, job_description: str, custom_fi
 
     return "{\n" + ",\n".join(lines) + "\n}"
 
-def build_eval_prompt(job_title: str, department: str, job_description: str, resume_text: str, custom_fields: list) -> str:
+def build_eval_prompt(
+    job_title: str,
+    department: str,
+    job_description: str,     
+    resume_text: str,
+    custom_fields, # <-- list of dicts from session_state
+) -> str:
     schema = schema_text(job_title, department, job_description, custom_fields)
 
-    # Authoritative rules payload: list of {field, instruction}
     rules_payload = json.dumps(
-        [{"field": f["name"], "instruction": f.get("instruction","If relevant, include in consideration.")} for f in custom_fields],
+        [{"field": f["name"], "instruction": f.get("instruction","")} for f in st.session_state.custom_fields],
         ensure_ascii=False
     )
 
-    return f"""You are an expert hiring manager. Output STRICT JSON only — no prose, no markdown, no code fences.
+    return f"""You are an expert hiring manager. Return your evaluation as STRICT JSON only — no prose, no markdown, no code fences.
+
+REQUIRED JSON Schema (keys and types MUST match exactly):
+{schema}
 
 JOB REQUIREMENTS:
 Title: {job_title}
@@ -162,28 +170,16 @@ Description: {job_description}
 CANDIDATE RESUME:
 {resume_text}
 
-CATEGORY INSTRUCTIONS (authoritative; include ALL of them in custom_considerations):
+CATEGORY INSTRUCTIONS (authoritative; include ALL in custom_considerations):
 {rules_payload}
 
-MANDATES:
-- For every item in CATEGORY INSTRUCTIONS, emit one object in custom_considerations[] with:
-  - field (string): the field name
-  - instruction (string): echo the instruction text verbatim
-  - applied (boolean): true if you used this instruction to influence your reasoning/score, else false
-  - impact (string): 1–2 lines describing *how* it affected strengths/concerns/score (or why it didn't)
-- Do not omit any instruction from custom_considerations[].
-
-CRITICAL RULES:
-1. Output ONLY a single JSON object.
-2. Use double quotes for strings. No trailing commas.
-3. overall_score must be a number.
-4. key_strengths must have 2–4 items; potential_concerns must have 1–3.
-5. recommendation must be exactly "Hire", "Consider", or "Pass".
-6. Be specific to THIS candidate: cite concrete projects/skills/experience from the resume.
-
-Expected JSON format:
-{schema}
+EVALUATION INSTRUCTIONS:
+1. Analyze the candidate vs the job.
+2. Follow every CATEGORY INSTRUCTION; for each one emit an item in custom_considerations with field, instruction, applied (true/false), and impact.
+3. If specific scoring guidance is given, follow it.
+4. Output only the JSON object.
 """
+
 
 # ---------- Run ----------
 if st.button("🔍 Recommend Candidates"):
