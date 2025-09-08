@@ -146,14 +146,15 @@ def schema_text(job_title: str, department: str, job_description: str, custom_fi
 def build_eval_prompt(
     job_title: str,
     department: str,
-    job_description: str,     
-    resume_text: str,
-    custom_fields, # <-- list of dicts from session_state
+    job_description: str,
+    custom_fields: list,   # <-- rules go 4th
+    resume_text: str       # <-- resume last
 ) -> str:
     schema = schema_text(job_title, department, job_description, custom_fields)
 
+    # Build from the param you passed in, not session_state
     rules_payload = json.dumps(
-        [{"field": f["name"], "instruction": f.get("instruction","")} for f in st.session_state.custom_fields],
+        [{"field": f["name"], "instruction": f.get("instruction", "")} for f in custom_fields],
         ensure_ascii=False
     )
 
@@ -178,6 +179,10 @@ EVALUATION INSTRUCTIONS:
 2. Follow every CATEGORY INSTRUCTION; for each one emit an item in custom_considerations with field, instruction, applied (true/false), and impact.
 3. If specific scoring guidance is given, follow it.
 4. Output only the JSON object.
+- You MUST apply every CATEGORY INSTRUCTION when producing overall_score, recommendation, and custom field values.
+- If an instruction specifies a threshold (e.g. "score below 5"), you MUST ensure the numeric score obeys it.
+- If an instruction specifies a condition (e.g. "if hobby of singing is present"), you MUST check the resume text for that condition.
+- Always reflect each instruction in custom_considerations[] with field, instruction, applied, and exact impact.
 """
 
 
@@ -191,7 +196,7 @@ if st.button("🔍 Recommend Candidates"):
         with st.spinner("Analyzing resumes with Mistral..."):
             for resume_file in uploaded_files:
                 resume_text = extract_text_from_pdf(resume_file)
-                prompt = build_eval_prompt(job_title, department, job_description, resume_text, st.session_state.custom_fields)
+                prompt = build_eval_prompt(job_title, department, job_description, st.session_state.custom_fields, resume_text,)
                 result = call_mistral(prompt)
 
                 st.markdown(f"### 📄 {resume_file.name}")
