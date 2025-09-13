@@ -1,8 +1,8 @@
+from typing import List, Dict, Any, Optional, Tuple, Type, get_args, get_origin, Literal
+from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
-from typing import List, Literal, Any, Dict, Optional, Tuple, Type
-from pydantic import BaseModel, Field, create_model, ValidationError
 import json, re
 
 # ---------- Base fields ----------
@@ -22,10 +22,10 @@ BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
     'candidate_name': (str, ...),
     'job_title': (str, ...),
     'department': (str, ...),
-    # LLM must explain how each dynamic instruction affected the result
     'custom_considerations': (List[Consideration], ...),
 }
 
+# Function to dynamically generate models based on custom fields
 def take_dynamic_input(t: str, enum_vals: Optional[list] = None) -> Tuple[Type[Any], Any]:
     if t == "enum":
         if enum_vals:
@@ -34,6 +34,7 @@ def take_dynamic_input(t: str, enum_vals: Optional[list] = None) -> Tuple[Type[A
     mapping = {"string": str, "integer": int, "float": float, "boolean": bool}
     return (mapping.get(t, str), ...)
 
+# Function to build a dynamic model based on custom fields
 def build_dynamic_model(custom_fields: list) -> Type[BaseModel]:
     fields = dict(BASE_FIELDS)  # Start with base fields
     for f in custom_fields:
@@ -71,8 +72,6 @@ with st.expander("Add Custom Field"):
         placeholder=(
             "Examples:\n"
             "- If anything is provided here and it's relevant to the JD, include it in the evaluation.\n"
-            #"- Prefer candidates who previously worked with our organization.\n"
-            #"- If this field is present and strong, bump overall assessment; otherwise ignore."
         ),
         height=120
     )
@@ -185,18 +184,45 @@ EVALUATION INSTRUCTIONS:
 - Always reflect each instruction in custom_considerations[] with field, instruction, applied, and exact impact.
 """
 
+# ---------- Pre-Evaluation Check Functions ----------
+def validate_job_details(job_title, department, job_description):
+    validation_prompt = f"Given the job title '{job_title}', department '{department}', and job description '{job_description}', please summarize the key requirements of the job."
+    return call_mistral(validation_prompt)
+
+def validate_custom_fields(custom_fields):
+    validation_results = []
+    for field in custom_fields:
+        prompt = f"Given the custom field '{field['name']}' with instruction '{field['instruction']}', please explain how it will impact the candidate scoring."
+        validation_results.append(call_mistral(prompt))
+    return validation_results
+
+def run_pre_evaluation_checks(job_title, department, job_description, custom_fields):
+    job_validation = validate_job_details(job_title, department, job_description)
+    custom_field_validations = validate_custom_fields(custom_fields)
+    return job_validation, custom_field_validations
 
 # ---------- Run ----------
 if st.button("🔍 Recommend Candidates"):
     if not uploaded_files or not job_description:
         st.warning("Please enter the job description and upload at least one resume.")
     else:
+        # Run pre-evaluation checks
+        job_validation, custom_field_validations = run_pre_evaluation_checks(job_title, department, job_description, st.session_state.custom_fields)
+
+        # Display job validation and custom field validations
+        st.write("**Job Validation:**")
+        st.write(job_validation)
+        st.write("**Custom Field Validations:**")
+        for validation in custom_field_validations:
+            st.write(validation)
+
+        # Proceed only if validations are successful
         EvaluationModel = build_dynamic_model(st.session_state.custom_fields)
 
         with st.spinner("Analyzing resumes with Mistral..."):
             for resume_file in uploaded_files:
                 resume_text = extract_text_from_pdf(resume_file)
-                prompt = build_eval_prompt(job_title, department, job_description, st.session_state.custom_fields, resume_text,)
+                prompt = build_eval_prompt(job_title, department, job_description, st.session_state.custom_fields, resume_text)
                 result = call_mistral(prompt)
 
                 st.markdown(f"### 📄 {resume_file.name}")
