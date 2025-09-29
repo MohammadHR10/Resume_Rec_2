@@ -3,7 +3,8 @@ from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
-import json, re
+import json, re, zipfile, io
+from pathlib import Path
 
 # ---------- Base fields ----------
 class Consideration(BaseModel):
@@ -59,6 +60,67 @@ def build_dynamic_model(custom_fields: list) -> Type[BaseModel]:
     Model = create_model('EvaluationModel', **fields)
     Model.model_config = {"extra": "forbid"}
     return Model
+
+# ---------- ZIP file processing ----------
+def extract_pdfs_from_zip(zip_file) -> List[Tuple[str, bytes]]:
+    """
+    Extract PDF files from a ZIP archive.
+    Returns a list of tuples (filename, pdf_content)
+    """
+    pdf_files = []
+    
+    try:
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            for file_info in zip_ref.infolist():
+                # Skip directories and non-PDF files
+                if file_info.is_dir() or not file_info.filename.lower().endswith('.pdf'):
+                    continue
+                
+                # Extract the PDF content
+                pdf_content = zip_ref.read(file_info.filename)
+                
+                # Get just the filename without path
+                filename = Path(file_info.filename).name
+                
+                pdf_files.append((filename, pdf_content))
+                
+    except zipfile.BadZipFile:
+        st.error("❌ Invalid ZIP file. Please upload a valid ZIP archive.")
+        return []
+    except Exception as e:
+        st.error(f"❌ Error reading ZIP file: {str(e)}")
+        return []
+    
+    return pdf_files
+
+def process_uploaded_files(uploaded_files, uploaded_zip):
+    """
+    Process both individual PDF files and ZIP files containing PDFs.
+    Returns a list of tuples (filename, file_object_or_content)
+    """
+    all_files = []
+    
+    # Process individual PDF files
+    if uploaded_files:
+        for file in uploaded_files:
+            all_files.append((file.name, file))
+    
+    # Process ZIP file
+    if uploaded_zip:
+        st.info(f"📁 Processing ZIP file: {uploaded_zip.name}")
+        pdf_files = extract_pdfs_from_zip(uploaded_zip)
+        
+        if pdf_files:
+            st.success(f"✅ Found {len(pdf_files)} PDF files in ZIP archive")
+            for filename, pdf_content in pdf_files:
+                # Create a file-like object from the PDF content
+                file_obj = io.BytesIO(pdf_content)
+                file_obj.name = filename  # Add name attribute for compatibility
+                all_files.append((filename, file_obj))
+        else:
+            st.warning("⚠️ No PDF files found in the ZIP archive")
+    
+    return all_files
 
 # ---------- UI ----------
 st.set_page_config(page_title="Resume Recommender", layout="wide")
@@ -122,7 +184,43 @@ if st.session_state.custom_fields:
                 st.session_state.custom_fields.pop(i)
                 st.rerun()
 
-uploaded_files = st.file_uploader("Upload Resumes (PDF only)", type="pdf", accept_multiple_files=True)
+# File upload section
+st.markdown("### 📁 Upload Resumes")
+
+upload_method = st.radio(
+    "Choose upload method:",
+    ["Upload Individual Resumes", "Upload ZIP File"],
+    index=0,
+    help="Individual Resumes: Select multiple PDF files. ZIP File: Upload one ZIP containing multiple PDF resumes."
+)
+
+uploaded_files = None
+uploaded_zip = None
+
+if upload_method == "Upload Individual Resumes":
+    uploaded_files = st.file_uploader(
+        "Select multiple PDF resume files", 
+        type="pdf", 
+        accept_multiple_files=True,
+        key="pdf_uploader"
+    )
+
+if upload_method == "Upload ZIP File":
+    uploaded_zip = st.file_uploader(
+        "Upload ZIP file containing PDF resumes", 
+        type="zip",
+        key="zip_uploader"
+    )
+
+# Process all uploaded files
+all_resume_files = process_uploaded_files(uploaded_files, uploaded_zip)
+
+# Display file count summary
+if all_resume_files:
+    st.info(f"📊 Ready to process {len(all_resume_files)} resume(s)")
+    with st.expander("View file list"):
+        for i, (filename, _) in enumerate(all_resume_files, 1):
+            st.write(f"{i}. {filename}")
 
 # ---------- Prompt/schema ----------
 def schema_text(job_title: str, department: str, job_description: str, custom_fields: list) -> str:
@@ -241,68 +339,60 @@ def run_pre_evaluation_checks(job_title, department, job_description, custom_fie
 def clean_json_output(raw_text: str) -> Optional[str]:
     """
     Tries to extract and sanitize a JSON object from LLM output.
-    Handles control characters and malformed JSON.
+    Handles control characters and malformed JSON, especially complex nested structures.
     """
-    # Find JSON object
-    json_match = re.search(r'\{(?:[^{}]|{[^{}]*})*\}', raw_text, re.DOTALL)
+    # First, try to find the JSON object with a more flexible regex
+    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     if not json_match:
         return None
     
     s = json_match.group(0).strip()
     
-    # Step 1: Remove or escape control characters
-    # Replace problematic control characters
-    s = s.replace('\n', ' ')  # Replace newlines with spaces
-    s = s.replace('\r', ' ')  # Replace carriage returns with spaces  
-    s = s.replace('\t', ' ')  # Replace tabs with spaces
-    s = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', s)  # Remove other control characters
+    # If the raw JSON looks good already, try parsing it first
+    try:
+        json.loads(s)
+        return s  # If it parses successfully, return as-is
+    except json.JSONDecodeError:
+        pass  # Continue with cleaning
     
-    # Step 2: Fix unescaped quotes inside string values
-    # This is tricky - we need to escape quotes that are inside string values
-    # but not the quotes that define the strings
-    def escape_quotes_in_strings(match):
-        content = match.group(1)
-        # Escape any unescaped quotes inside the string content
-        content = content.replace('"', '\\"')
-        return f'"{content}"'
+    # Step 1: Replace smart quotes and problematic characters first
+    s = s.replace('"', '"').replace('"', '"')  # Smart quotes to regular quotes
+    s = s.replace(''', "'").replace(''', "'")  # Smart apostrophes
     
-    # Find string values and escape quotes inside them
-    s = re.sub(r'"([^"]*(?:\\"[^"]*)*)"', lambda m: f'"{m.group(1)}"', s)
+    # Step 2: Remove or replace control characters (but preserve structure)
+    s = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', '', s)  # Remove control chars but keep \n, \r, \t
     
-    # Step 3: Remove trailing commas before } or ]
+    # Step 3: Normalize whitespace without breaking structure
+    s = re.sub(r'\r\n', '\n', s)  # Normalize line endings
+    s = re.sub(r'\r', '\n', s)    # Convert remaining CR to LF
+    
+    # Step 4: Fix common JSON structural issues
+    # Remove trailing commas before } or ]
     s = re.sub(r',(\s*[}\]])', r'\1', s)
     
-    # Step 4: Remove leading commas after { or [
+    # Remove leading commas after { or [
     s = re.sub(r'([{\[])\s*,', r'\1', s)
     
-    # Step 5: Fix multiple consecutive commas
+    # Fix multiple consecutive commas
     s = re.sub(r',\s*,+', ',', s)
     
-    # Step 6: Remove commas at line start (after cleaning newlines)
-    s = re.sub(r',\s+', ', ', s)  # Normalize comma spacing
+    # Step 5: Fix boolean values
+    s = re.sub(r':\s*True\b', ': true', s)
+    s = re.sub(r':\s*False\b', ': false', s)
     
-    # Step 7: Fix missing quotes around field names
-    s = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', s)
-    
-    # Step 8: Fix boolean values
-    s = re.sub(r': *True\b', ': true', s)
-    s = re.sub(r': *False\b', ': false', s)
-    
-    # Step 9: Ensure arrays are properly formatted
-    s = re.sub(r'\[\s*([^"\[\]{}]+)\s*\]', lambda m: f'["{m.group(1).strip()}"]', s)
-    
-    # Step 10: Remove any remaining trailing comma before final }
-    s = re.sub(r',(\s*}$)', r'\1', s)
-    
-    # Step 11: Compress multiple spaces
-    s = re.sub(r'\s+', ' ', s)
+    # Step 6: Clean up spacing around structural elements
+    s = re.sub(r'\s*,\s*', ', ', s)  # Normalize comma spacing
+    s = re.sub(r'\s*:\s*', ': ', s)  # Normalize colon spacing
     
     return s
 
 # ---------- Run ----------
 if st.button("🔍 Recommend Candidates"):
-    if not uploaded_files or not job_description:
-        st.warning("Please enter the job description and upload at least one resume.")
+    # Process files first to check if we have any
+    all_resume_files = process_uploaded_files(uploaded_files, uploaded_zip)
+    
+    if not all_resume_files or not job_description:
+        st.warning("Please enter the job description and upload at least one resume or a ZIP file containing resumes.")
     else:
         job_validation, custom_field_validations = run_pre_evaluation_checks(
             job_title, department, job_description, st.session_state.custom_fields
@@ -317,14 +407,14 @@ if st.button("🔍 Recommend Candidates"):
         EvaluationModel = build_dynamic_model(st.session_state.custom_fields)
 
         with st.spinner("Analyzing resumes with Mistral..."):
-            for resume_file in uploaded_files:
-                resume_text = extract_text_from_pdf(resume_file)
+            for resume_filename, file_object in all_resume_files:
+                resume_text = extract_text_from_pdf(file_object)
                 prompt = build_eval_prompt(
                     job_title, department, job_description, st.session_state.custom_fields, resume_text
                 )
                 result = call_mistral(prompt)
 
-                st.markdown(f"### 📄 {resume_file.name}")
+                st.markdown(f"### 📄 {resume_filename}")
                 if isinstance(result, dict) and "choices" in result:
                     raw_text = result["choices"][0]["message"]["content"]
                     try:
@@ -346,25 +436,49 @@ if st.button("🔍 Recommend Candidates"):
                             
                             # Try multiple fallback parsing strategies
                             try:
-                                # Strategy 1: Remove everything before first { and after last }
+                                # Strategy 1: More aggressive JSON extraction and cleaning
                                 start = raw_text.find('{')
                                 end = raw_text.rfind('}') + 1
                                 if start != -1 and end > start:
                                     simple_json = raw_text[start:end]
-                                    # More aggressive cleanup
+                                    
+                                    # Ultra-aggressive cleanup
+                                    simple_json = simple_json.replace('"', '"').replace('"', '"')
+                                    simple_json = simple_json.replace(''', "'").replace(''', "'")
                                     simple_json = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', simple_json)
                                     simple_json = simple_json.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-                                    simple_json = re.sub(r',(\s*[}\]])', r'\1', simple_json)
-                                    simple_json = re.sub(r'\s+', ' ', simple_json)
+                                    
+                                    # Fix common JSON issues
+                                    simple_json = re.sub(r',(\s*[}\]])', r'\1', simple_json)  # Remove trailing commas
+                                    simple_json = re.sub(r'([{\[])\s*,', r'\1', simple_json)  # Remove leading commas
+                                    simple_json = re.sub(r',\s*,+', ',', simple_json)  # Fix multiple commas
+                                    simple_json = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', simple_json)  # Quote field names
+                                    simple_json = re.sub(r':\s*True\b', ': true', simple_json)  # Fix booleans
+                                    simple_json = re.sub(r':\s*False\b', ': false', simple_json)
+                                    simple_json = re.sub(r'\s+', ' ', simple_json)  # Normalize spaces
+                                    
+                                    # Try to balance braces and brackets
+                                    open_braces = simple_json.count('{')
+                                    close_braces = simple_json.count('}')
+                                    if open_braces > close_braces:
+                                        simple_json += '}' * (open_braces - close_braces)
+                                    
+                                    open_brackets = simple_json.count('[')
+                                    close_brackets = simple_json.count(']')
+                                    if open_brackets > close_brackets:
+                                        simple_json += ']' * (open_brackets - close_brackets)
                                     
                                     data = json.loads(simple_json)
-                                    st.info("✅ Fallback parsing succeeded!")
+                                    st.info("✅ Enhanced fallback parsing succeeded!")
                                 else:
                                     continue
-                            except json.JSONDecodeError:
-                                # Strategy 2: Try to manually fix common issues
+                            except json.JSONDecodeError as e2:
+                                # Strategy 2: Character-by-character reconstruction
                                 try:
-                                    # Replace smart quotes and other problematic characters
+                                    # Find the problematic character around position 1119
+                                    error_pos = getattr(e2, 'pos', 1119)
+                                    
+                                    # Try to fix the specific area around the error
                                     fixed_json = raw_text.replace('"', '"').replace('"', '"')
                                     fixed_json = fixed_json.replace(''', "'").replace(''', "'")
                                     
@@ -372,15 +486,35 @@ if st.button("🔍 Recommend Candidates"):
                                     end = fixed_json.rfind('}') + 1
                                     if start != -1 and end > start:
                                         fixed_json = fixed_json[start:end]
+                                        
+                                        # Remove problematic characters around error position
+                                        if error_pos < len(fixed_json):
+                                            # Look for common issues around the error position
+                                            context_start = max(0, error_pos - 50)
+                                            context_end = min(len(fixed_json), error_pos + 50)
+                                            context = fixed_json[context_start:context_end]
+                                            
+                                            # Fix common issues in the context
+                                            context = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', context)
+                                            context = re.sub(r',(\s*[}\]])', r'\1', context)
+                                            context = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', context)
+                                            
+                                            # Reconstruct the JSON
+                                            fixed_json = fixed_json[:context_start] + context + fixed_json[context_end:]
+                                        
+                                        # Final cleanup
                                         fixed_json = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', fixed_json)
                                         fixed_json = re.sub(r',(\s*[}\]])', r'\1', fixed_json)
                                         
                                         data = json.loads(fixed_json)
-                                        st.info("✅ Smart quote fix succeeded!")
+                                        st.info("✅ Position-specific fix succeeded!")
                                     else:
                                         continue
-                                except:
-                                    st.error("❌ All parsing strategies failed. Please check the raw response above.")
+                                except Exception as e3:
+                                    st.error(f"❌ All parsing strategies failed. Last error: {str(e3)}")
+                                    st.write("**Debug info:**")
+                                    st.write(f"Original error position: {getattr(e, 'pos', 'unknown')}")
+                                    st.write(f"Cleaned JSON length: {len(cleaned) if cleaned else 'N/A'}")
                                     continue
 
                         # Validate with dynamic Pydantic model
