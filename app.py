@@ -131,6 +131,99 @@ job_title = st.text_input("Job Title")
 department = st.selectbox("Department", ["Engineering", "Marketing", "Design", "Data", "Other"])
 job_description = st.text_area("Job Description", height=200)
 
+# ---------- Core Criteria Definitions ----------
+st.subheader("Core Evaluation Criteria")
+
+# Initialize session state for core criteria definitions
+if 'core_criteria_defs' not in st.session_state:
+    st.session_state.core_criteria_defs = {
+        'key_strengths': {
+            'custom': False,
+            'definition': "Score key_strengths (1–5) based on job requirements"
+        },
+        'experience': {
+            'custom': False,
+            'definition': "Score experience (1–5) covering both years of experience AND relevance to this specific role"
+        },
+        'skills_match': {
+            'custom': False,
+            'definition': "Score skills_match (1–5) for technical/functional skill alignment"
+        }
+    }
+
+with st.expander("Define Core Criteria"):
+    st.info("You can customize what Key Strengths, Experience, and Skills Match mean for your evaluation, or use the default definitions.")
+    
+    # Key Strengths definition
+    st.write("**Key Strengths Definition**")
+    key_strengths_custom = st.checkbox(
+        "Customize Key Strengths definition", 
+        value=st.session_state.core_criteria_defs['key_strengths']['custom'],
+        key="key_strengths_custom"
+    )
+    
+    if key_strengths_custom:
+        key_strengths_def = st.text_area(
+            "Define what Key Strengths means for this evaluation:",
+            value=st.session_state.core_criteria_defs['key_strengths']['definition'],
+            placeholder="Example: Key strengths should prioritize leadership abilities, technical expertise, and communication skills",
+            height=80,
+            key="key_strengths_def"
+        )
+    else:
+        key_strengths_def = "Score key_strengths (1–5) based on job requirements"
+    
+    # Experience definition
+    st.write("**Experience Definition**")
+    experience_custom = st.checkbox(
+        "Customize Experience definition", 
+        value=st.session_state.core_criteria_defs['experience']['custom'],
+        key="experience_custom"
+    )
+    
+    if experience_custom:
+        experience_def = st.text_area(
+            "Define what Experience means for this evaluation:",
+            value=st.session_state.core_criteria_defs['experience']['definition'],
+            placeholder="Example: Experience should emphasize industry-specific background and relevant project work",
+            height=80,
+            key="experience_def"
+        )
+    else:
+        experience_def = "Score experience (1–5) covering both years of experience AND relevance to this specific role"
+    
+    # Skills Match definition
+    st.write("**Skills Match Definition**")
+    skills_match_custom = st.checkbox(
+        "Customize Skills Match definition", 
+        value=st.session_state.core_criteria_defs['skills_match']['custom'],
+        key="skills_match_custom"
+    )
+    
+    if skills_match_custom:
+        skills_match_def = st.text_area(
+            "Define what Skills Match means for this evaluation:",
+            value=st.session_state.core_criteria_defs['skills_match']['definition'],
+            placeholder="Example: Skills match should focus on technical proficiencies listed in job description",
+            height=80,
+            key="skills_match_def"
+        )
+    else:
+        skills_match_def = "Score skills_match (1–5) for technical/functional skill alignment"
+    
+    # Save button
+    if st.button("Apply Core Criteria Definitions"):
+        st.session_state.core_criteria_defs['key_strengths']['custom'] = key_strengths_custom
+        st.session_state.core_criteria_defs['key_strengths']['definition'] = key_strengths_def
+        
+        st.session_state.core_criteria_defs['experience']['custom'] = experience_custom
+        st.session_state.core_criteria_defs['experience']['definition'] = experience_def
+        
+        st.session_state.core_criteria_defs['skills_match']['custom'] = skills_match_custom
+        st.session_state.core_criteria_defs['skills_match']['definition'] = skills_match_def
+        
+        st.success("✅ Core criteria definitions updated!")
+
 # ---------- Custom fields ----------
 st.subheader("Custom Evaluation Fields")
 if 'custom_fields' not in st.session_state:
@@ -281,6 +374,16 @@ def build_eval_prompt(
         [{"field": f["name"], "instruction": f.get("instruction", "")} for f in custom_fields],
         ensure_ascii=False
     )
+    
+    # Get custom core criteria definitions if they exist, otherwise use defaults
+    if 'core_criteria_defs' in st.session_state:
+        key_strengths_def = st.session_state.core_criteria_defs['key_strengths']['definition']
+        experience_def = st.session_state.core_criteria_defs['experience']['definition']
+        skills_match_def = st.session_state.core_criteria_defs['skills_match']['definition']
+    else:
+        key_strengths_def = "Score key_strengths (1–5) based on job requirements"
+        experience_def = "Score experience (1–5) covering both years of experience AND relevance to this specific role"
+        skills_match_def = "Score skills_match (1–5) for technical/functional skill alignment"
 
     return f"""You are an expert hiring manager. Return STRICT JSON only—no prose/markdown/fences.
 
@@ -301,9 +404,9 @@ CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
 {rules_payload}
 
 EVALUATION RULES (follow ALL):
-1) Score key_strengths (1–5) based on job requirements
-2) Score experience (1–5) covering both years of experience AND relevance to this specific role
-3) Score skills_match (1–5) for technical/functional skill alignment
+1) {key_strengths_def}
+2) {experience_def}
+3) {skills_match_def}
 4) For EACH custom field, extract value AND provide score (1–5) AND explanation
 5) If instruction sets threshold/condition, set that field's score accordingly and note impact
 6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
