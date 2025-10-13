@@ -3,8 +3,11 @@ from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
-import json, re, zipfile, io
+import json, re, zipfile, io, datetime, base64
 from pathlib import Path
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ---------- Base fields ----------
 class Consideration(BaseModel):
@@ -439,6 +442,111 @@ def run_pre_evaluation_checks(job_title, department, job_description, custom_fie
     return job_validation, custom_field_validations
 
 # ---------- Enhanced JSON sanitizer ----------
+def create_excel_report(evaluations_with_metadata):
+    """
+    Create an Excel report with all evaluation results
+    
+    Args:
+        evaluations_with_metadata: List of dictionaries containing evaluation objects and metadata
+        
+    Returns:
+        BytesIO object containing the Excel file
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resume Evaluations"
+    
+    # Define styles
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    border = Border(
+        left=Side(style='thin'), 
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Create headers
+    headers = [
+        "Candidate", "Overall", "Recommendation", "Key Strengths", "Experience", 
+        "Skills Match", "Potential Concerns", "Notes"
+    ]
+    
+    # Add custom fields to headers if any
+    custom_field_names = []
+    if evaluations_with_metadata and "custom_fields" in evaluations_with_metadata[0]:
+        for field in evaluations_with_metadata[0]["custom_fields"]:
+            field_name = field['name'].replace('_', ' ').title()
+            headers.insert(-1, field_name)
+            custom_field_names.append(field['name'])
+    
+    # Apply header styles
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_num, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = border
+    
+    # Add evaluation data
+    for row_num, eval_item in enumerate(evaluations_with_metadata, 2):
+        # Get the evaluation object
+        eval_data = eval_item["evaluation"]
+        
+        # Basic fields
+        ws.cell(row=row_num, column=1, value=eval_data.candidate_name)
+        ws.cell(row=row_num, column=2, value=eval_data.overall_score)
+        ws.cell(row=row_num, column=3, value=eval_data.recommendation)
+        ws.cell(row=row_num, column=4, value=", ".join(eval_data.key_strengths))
+        ws.cell(row=row_num, column=5, value=eval_data.experience_score)
+        ws.cell(row=row_num, column=6, value=eval_data.skills_match_score)
+        ws.cell(row=row_num, column=7, value=", ".join(eval_data.potential_concerns))
+        
+        # Custom fields (if any)
+        col_offset = 8
+        for field_name in custom_field_names:
+            score_attr = f"{field_name}_score"
+            if hasattr(eval_data, score_attr):
+                ws.cell(row=row_num, column=col_offset, value=getattr(eval_data, score_attr, None))
+            col_offset += 1
+        
+        # Notes (empty column for manual notes)
+        ws.cell(row=row_num, column=len(headers), value="")
+    
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_length = 0
+        column = col[0].column_letter
+        for cell in col:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        adjusted_width = (max_length + 2) if max_length > 10 else 12
+        ws.column_dimensions[column].width = min(adjusted_width, 40)
+    
+    # Save to BytesIO
+    excel_file = io.BytesIO()
+    wb.save(excel_file)
+    excel_file.seek(0)
+    return excel_file
+
+def get_download_link(excel_file, filename):
+    """
+    Generate a download link for an Excel file
+    
+    Args:
+        excel_file: BytesIO object with Excel data
+        filename: Name to use for the download
+        
+    Returns:
+        HTML string with download link
+    """
+    b64 = base64.b64encode(excel_file.getvalue()).decode()
+    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download Excel Report</a>'
+    return href
+
 def clean_json_output(raw_text: str) -> Optional[str]:
     """
     Tries to extract and sanitize a JSON object from LLM output.
@@ -508,6 +616,12 @@ if st.button("🔍 Recommend Candidates"):
             st.write(v)
 
         EvaluationModel = build_dynamic_model(st.session_state.custom_fields)
+        
+        # Initialize list to store evaluation results
+        if 'evaluations' not in st.session_state:
+            st.session_state.evaluations = []
+        else:
+            st.session_state.evaluations = []  # Clear previous evaluations
 
         with st.spinner("Analyzing resumes with Mistral..."):
             for resume_filename, file_object in all_resume_files:
@@ -684,6 +798,15 @@ if st.button("🔍 Recommend Candidates"):
                         with cols[1]:
                             st.info(f"**Recommendation:** {evaluation.recommendation}")
                             st.caption(f"💭 {evaluation.overall_explanation}")
+                            
+                        # Store successful evaluation for Excel export
+                        # Create a dictionary to store evaluation with metadata instead of modifying the model directly
+                        eval_with_metadata = {
+                            "evaluation": evaluation,
+                            "custom_fields": st.session_state.custom_fields,
+                            "resume_filename": resume_filename
+                        }
+                        st.session_state.evaluations.append(eval_with_metadata)
 
                     except (ValueError, ValidationError) as e:
                         st.error(f"❌ Failed to validate evaluation: {str(e)}")
@@ -695,3 +818,19 @@ if st.button("🔍 Recommend Candidates"):
                         st.write(raw_text)
                 else:
                     st.error("❌ Failed to get response from Mistral.")
+                    
+        # After all evaluations, offer Excel download if we have results
+        if st.session_state.evaluations:
+            st.divider()
+            st.subheader("📊 Export Results")
+            
+            # Generate Excel report
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            job_title_slug = job_title.lower().replace(" ", "_")
+            filename = f"resume_evaluations_{job_title_slug}_{today}.xlsx"
+            
+            excel_file = create_excel_report(st.session_state.evaluations)
+            
+            # Display download button
+            st.markdown(get_download_link(excel_file, filename), unsafe_allow_html=True)
+            st.caption("Export all evaluation results to Excel for offline review")
