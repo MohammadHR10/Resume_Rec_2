@@ -444,7 +444,7 @@ def run_pre_evaluation_checks(job_title, department, job_description, custom_fie
 # ---------- Enhanced JSON sanitizer ----------
 def create_excel_report(evaluations_with_metadata):
     """
-    Create an Excel report with all evaluation results
+    Create a comprehensive Excel report with all evaluation results including detailed explanations
     
     Args:
         evaluations_with_metadata: List of dictionaries containing evaluation objects and metadata
@@ -458,7 +458,11 @@ def create_excel_report(evaluations_with_metadata):
     
     # Define styles
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
+    header_font = Font(color="FFFFFF", bold=True, size=12)
+    subheader_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    subheader_font = Font(color="FFFFFF", bold=True, size=10)
+    score_fill = PatternFill(start_color="D5E8D4", end_color="D5E8D4", fill_type="solid")  # Light green for scores
+    explanation_fill = PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid")  # Light orange for explanations
     border = Border(
         left=Side(style='thin'), 
         right=Side(style='thin'),
@@ -466,65 +470,205 @@ def create_excel_report(evaluations_with_metadata):
         bottom=Side(style='thin')
     )
     
-    # Create headers
-    headers = [
-        "Candidate", "Overall", "Recommendation", "Key Strengths", "Experience", 
-        "Skills Match", "Potential Concerns", "Notes"
+    # Create comprehensive headers
+    score_headers = [
+        "Candidate Name", "Job Title", "Department", "Overall Score", "Recommendation",
+        "Key Strengths Score", "Experience Score", "Skills Match Score"
     ]
     
-    # Add custom fields to headers if any
+    explanation_headers = [
+        "Key Strengths List", "Key Strengths Explanation", "Experience Explanation", 
+        "Skills Match Explanation", "Potential Concerns", "Overall Explanation"
+    ]
+    
+    # Add custom field headers if any
     custom_field_names = []
+    custom_score_headers = []
+    custom_explanation_headers = []
+    
     if evaluations_with_metadata and "custom_fields" in evaluations_with_metadata[0]:
         for field in evaluations_with_metadata[0]["custom_fields"]:
-            field_name = field['name'].replace('_', ' ').title()
-            headers.insert(-1, field_name)
-            custom_field_names.append(field['name'])
+            field_name = field['name']
+            field_display = field_name.replace('_', ' ').title()
+            custom_field_names.append(field_name)
+            custom_score_headers.append(f"{field_display} Score")
+            custom_explanation_headers.append(f"{field_display} Explanation")
     
-    # Apply header styles
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_num, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+    # Combine all headers
+    all_score_headers = score_headers + custom_score_headers
+    all_explanation_headers = explanation_headers + custom_explanation_headers
+    all_headers = all_score_headers + all_explanation_headers + ["Custom Considerations", "Notes"]
+    
+    # Create main header row
+    ws.merge_cells('A1:' + chr(ord('A') + len(all_score_headers) - 1) + '1')
+    ws.cell(row=1, column=1, value="SCORES & BASIC INFO").font = header_font
+    ws.cell(row=1, column=1).fill = header_fill
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=1, column=1).border = border
+    
+    start_col = len(all_score_headers) + 1
+    end_col = len(all_score_headers) + len(all_explanation_headers)
+    ws.merge_cells(f'{chr(ord("A") + start_col - 1)}1:{chr(ord("A") + end_col - 1)}1')
+    ws.cell(row=1, column=start_col, value="EXPLANATIONS & REASONING").font = header_font
+    ws.cell(row=1, column=start_col).fill = header_fill
+    ws.cell(row=1, column=start_col).alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=1, column=start_col).border = border
+    
+    # Add remaining headers for other columns
+    remaining_start = len(all_score_headers) + len(all_explanation_headers) + 1
+    for i, header in enumerate(["Custom Considerations", "Notes"]):
+        col_num = remaining_start + i
+        ws.cell(row=1, column=col_num, value=header).font = header_font
+        ws.cell(row=1, column=col_num).fill = header_fill
+        ws.cell(row=1, column=col_num).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=1, column=col_num).border = border
+    
+    # Create sub-header row
+    for col_num, header in enumerate(all_score_headers, 1):
+        cell = ws.cell(row=2, column=col_num, value=header)
+        cell.font = subheader_font
+        cell.fill = score_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = border
+    
+    for col_num, header in enumerate(all_explanation_headers, len(all_score_headers) + 1):
+        cell = ws.cell(row=2, column=col_num, value=header)
+        cell.font = subheader_font
+        cell.fill = explanation_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = border
+    
+    # Add remaining sub-headers
+    remaining_headers = ["Custom Considerations", "Notes"]
+    for i, header in enumerate(remaining_headers):
+        col_num = len(all_score_headers) + len(all_explanation_headers) + 1 + i
+        cell = ws.cell(row=2, column=col_num, value=header)
+        cell.font = subheader_font
+        cell.fill = subheader_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = border
     
     # Add evaluation data
-    for row_num, eval_item in enumerate(evaluations_with_metadata, 2):
-        # Get the evaluation object
+    for row_num, eval_item in enumerate(evaluations_with_metadata, 3):
         eval_data = eval_item["evaluation"]
         
-        # Basic fields
-        ws.cell(row=row_num, column=1, value=eval_data.candidate_name)
-        ws.cell(row=row_num, column=2, value=eval_data.overall_score)
-        ws.cell(row=row_num, column=3, value=eval_data.recommendation)
-        ws.cell(row=row_num, column=4, value=", ".join(eval_data.key_strengths))
-        ws.cell(row=row_num, column=5, value=eval_data.experience_score)
-        ws.cell(row=row_num, column=6, value=eval_data.skills_match_score)
-        ws.cell(row=row_num, column=7, value=", ".join(eval_data.potential_concerns))
+        # SCORES & BASIC INFO SECTION
+        col = 1
+        ws.cell(row=row_num, column=col, value=eval_data.candidate_name).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.job_title).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.department).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.overall_score).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.recommendation).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.key_strengths_score).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.experience_score).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.skills_match_score).border = border
+        col += 1
         
-        # Custom fields (if any)
-        col_offset = 8
+        # Custom field scores
         for field_name in custom_field_names:
             score_attr = f"{field_name}_score"
-            if hasattr(eval_data, score_attr):
-                ws.cell(row=row_num, column=col_offset, value=getattr(eval_data, score_attr, None))
-            col_offset += 1
+            score_value = getattr(eval_data, score_attr, None) if hasattr(eval_data, score_attr) else None
+            ws.cell(row=row_num, column=col, value=score_value).border = border
+            col += 1
+        
+        # EXPLANATIONS & REASONING SECTION
+        ws.cell(row=row_num, column=col, value=", ".join(eval_data.key_strengths)).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.key_strengths_explanation).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.experience_explanation).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.skills_match_explanation).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=", ".join(eval_data.potential_concerns)).border = border
+        col += 1
+        ws.cell(row=row_num, column=col, value=eval_data.overall_explanation).border = border
+        col += 1
+        
+        # Custom field explanations
+        for field_name in custom_field_names:
+            explanation_attr = f"{field_name}_explanation"
+            explanation_value = getattr(eval_data, explanation_attr, None) if hasattr(eval_data, explanation_attr) else None
+            ws.cell(row=row_num, column=col, value=explanation_value).border = border
+            col += 1
+        
+        # Custom considerations
+        considerations_text = ""
+        if hasattr(eval_data, 'custom_considerations') and eval_data.custom_considerations:
+            considerations_list = []
+            for item in eval_data.custom_considerations:
+                status = "APPLIED" if item.applied else "NOT APPLIED"
+                considerations_list.append(f"{item.field} → {status} | Instruction: {item.instruction} | Impact: {item.impact}")
+            considerations_text = "\n".join(considerations_list)
+        
+        ws.cell(row=row_num, column=col, value=considerations_text).border = border
+        col += 1
         
         # Notes (empty column for manual notes)
-        ws.cell(row=row_num, column=len(headers), value="")
+        ws.cell(row=row_num, column=col, value="").border = border
     
-    # Auto-adjust column widths
-    for col in ws.columns:
+    # Auto-adjust column widths with better sizing (handle merged cells properly)
+    def get_column_letter_simple(col_idx):
+        """Simple function to convert column index to letter"""
+        result = ""
+        while col_idx > 0:
+            col_idx -= 1
+            result = chr(col_idx % 26 + ord('A')) + result
+            col_idx //= 26
+        return result
+    
+    for col_idx in range(1, ws.max_column + 1):
         max_length = 0
-        column = col[0].column_letter
-        for cell in col:
+        column_letter = get_column_letter_simple(col_idx)
+        
+        # Check all cells in this column, but skip rows with merged cells in headers
+        for row_idx in range(3, ws.max_row + 1):  # Start from row 3 to skip header rows
             try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if cell.value:
+                    # Handle multi-line content
+                    lines = str(cell.value).split('\n')
+                    for line in lines:
+                        if len(line) > max_length:
+                            max_length = len(line)
             except:
-                pass
-        adjusted_width = (max_length + 2) if max_length > 10 else 12
-        ws.column_dimensions[column].width = min(adjusted_width, 40)
+                continue
+        
+        # Also check the sub-header row (row 2) for column sizing
+        try:
+            header_cell = ws.cell(row=2, column=col_idx)
+            if header_cell.value:
+                header_length = len(str(header_cell.value))
+                if header_length > max_length:
+                    max_length = header_length
+        except:
+            pass
+        
+        # Set appropriate width based on content
+        if max_length < 15:
+            adjusted_width = 15
+        elif max_length > 60:
+            adjusted_width = 60
+        else:
+            adjusted_width = max_length + 5
+        
+        ws.column_dimensions[column_letter].width = adjusted_width
+    
+    # Set row heights for better readability
+    ws.row_dimensions[1].height = 25  # Main header
+    ws.row_dimensions[2].height = 40  # Sub headers
+    
+    # Set text wrapping for explanation columns
+    for row in ws.iter_rows(min_row=3):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
     
     # Save to BytesIO
     excel_file = io.BytesIO()
