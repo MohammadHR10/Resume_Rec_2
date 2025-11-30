@@ -3,11 +3,11 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-#print("API KEY:", os.getenv("mistral_api"))
 
-api_key = os.getenv("mistral_api")
-API_URL = "https://api.mistral.ai/v1/chat/completions"
-
+# Use internal LLM Gateway instead of Mistral API
+api_key = os.getenv("LLM_GATEWAY_KEY")
+API_URL = os.getenv("LLM_GATEWAY_URL", "http://litellma01.tkg.utshare.internal:4000/v1/chat/completions")
+MODEL = os.getenv("LLM_MODEL", "llama-3.2-90b-vision-instruct")
 
 headers = {
     "Authorization": f"Bearer {api_key}",
@@ -15,10 +15,14 @@ headers = {
 }
 
 def call_mistral(prompt):
+    """
+    Call the internal LLM Gateway for completions.
+    Using the model specified in .env (default: llama-3.2-90b-vision-instruct)
+    """
     payload = {
-    "model": "mistral-small-latest",
-    "messages": [{"role": "user", "content": prompt}]
-}
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}]
+    }
 
     response = requests.post(API_URL, headers=headers, json=payload)
 
