@@ -53,23 +53,10 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         s = re.sub(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\b", "[REDACTED_ADDRESS]", s)
 
     # Name (best-effort): extract name from original, then replace all occurrences
-    if "name" in cats:
-        # Try to extract the actual candidate name from the ORIGINAL text before any redactions
-        candidate_name = None
-        lines = [l.strip() for l in re.split(r"\r?\n", text) if l.strip()]
-        
-        # Check for labeled name first in original text
-        m = re.search(r"(?im)^\s*(name|full\s*name)\s*[:\-]\s*(.+)$", text)
-        if m:
-            candidate_name = re.sub(r"\s+", " ", m.group(2)).strip()
-        else:
-            # Heuristic: first line that looks like a name (letters/spaces, no numbers/emails)
-            for l in lines[:5]:
-                if ("@" in l) or re.search(r"\d", l):
-                    continue
-                if len(l.split()) <= 6 and re.search(r"[A-Za-z]", l):
-                    candidate_name = l
-                    break
+    if "name" in cats or has_keyword("name"):
+        # Use extract_personal_info for smarter name detection
+        personal_info = extract_personal_info(text)
+        candidate_name = personal_info.get('name')
         
         # If we found a name, replace all occurrences of it in the text
         if candidate_name and len(candidate_name) > 2:
@@ -169,26 +156,130 @@ def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
     if m:
         info["github"] = m.group(0)
 
-    # Address (line starting with Address/Location or street pattern)
-    m = re.search(r"(?im)^\s*(address|location|current\s*address)\s*[:\-]\s*(.+)$", text)
+    # Address - improved extraction with priority order and validation
+    # Priority 1: Explicit labeled address
+    m = re.search(r"(?im)^\s*(address|location|current\s*address|residence)\s*[:\-]\s*(.+?)(?:\n|$)", text)
     if m:
-        info["address"] = m.group(2).strip()
-    else:
-        # Try to find street address pattern
-        m = re.search(r"\b\d{1,5}\s+\w+(?:\s\w+){0,4}\s(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.)\b[\w\s,.-]*",
-                      text, flags=re.I)
-        if m:
-            street = m.group(0).strip()
-            # Try to find associated city/state/zip pattern nearby
-            m2 = re.search(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?", text)
-            if m2:
-                info["address"] = f"{street}, {m2.group(0)}"
-            else:
-                info["address"] = street
-        else:
-            # Try city/state/zip pattern first
-            m = re.search(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?", text)
+        addr_candidate = m.group(2).strip()
+        # Clean up: remove trailing contact info that might be on same line
+        addr_candidate = re.sub(r'\s*\|\s*[\w.\-+]+@[\w\-]+\.[\w\-]+.*$', '', addr_candidate)
+        addr_candidate = re.sub(r'\s*\|\s*\+?\d[\d\s().\-]+$', '', addr_candidate)
+        # Stop at common section headers
+        addr_candidate = re.split(r'\s+(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b', addr_candidate)[0].strip()
+        if addr_candidate:
+            info["address"] = addr_candidate
+    
+    # Priority 2: Look in header (first 5 lines) for "City, State" or "City, State ZIP" patterns
+    # Common in resume headers like: "Sam Norman | Boston, Massachusetts"
+    elif lines:
+        for l in lines[:5]:
+            # Check for location after pipe or dash in header
+            if '|' in l or '–' in l or '—' in l:
+                # Split by pipe/dash and look for location in latter parts
+                parts = re.split(r'\s*[|–—]\s*', l)
+                for part in parts[1:]:  # Skip first part (usually name)
+                    # Match: "City, State" or "City, State ZIP"
+                    m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5})?$', part.strip())
+                    if m:
+                        info["address"] = part.strip()
+                        break
+                if info["address"]:
+                    break
+            # Also check if line itself is just "City, State" format (without pipes)
+            if not info["address"]:
+                m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$', l.strip())
+                if m:
+                    # Validate state
+                    city, state_part = m.group(1), m.group(2)
+                    us_states = {
+                        'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                        'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                        'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+                    }
+                    us_state_names = {
+                        'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
+                        'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
+                        'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
+                        'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
+                        'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
+                        'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
+                        'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
+                        'Wisconsin','Wyoming','Messachussetts'  # Include common typo
+                    }
+                    if state_part in us_states or state_part in us_state_names:
+                        info["address"] = l.strip()
+                        break
+    
+    # Priority 3: Search first 10 lines for street address patterns
+    if not info["address"] and lines:
+        for l in lines[:10]:
+            # Look for street address in this line
+            m = re.search(
+                r'\d{1,5}\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?)',
+                l
+            )
             if m:
+                # Found street address in this line
+                street = m.group(0).strip()
+                # Look for city/state after it in same line or next line
+                rest_of_line = l[m.end():].strip()
+                
+                # Try to find city, state in the rest of this line
+                city_state = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?', rest_of_line)
+                if city_state:
+                    info["address"] = f"{street}, {city_state.group(0)}"
+                    break
+                else:
+                    # Just use the street address
+                    info["address"] = street
+                    break
+    
+    # Priority 4: Full street address pattern in entire text
+    if not info["address"]:
+        # Match complete US address: street + city + state + optional ZIP
+        # More precise: stop at newline or end of line
+        m = re.search(
+            r'\d{1,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?),?\s*' +
+            r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?',
+            text
+        )
+        if m:
+            # Extract just the matched address, clean up
+            addr = m.group(0).strip()
+            # Stop at newline or common section markers
+            addr = re.split(r'\n|(?=\b(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b)', addr)[0].strip()
+            # Remove trailing punctuation artifacts
+            addr = re.sub(r'\s*[,;:]\s*$', '', addr)
+            if addr:
+                info["address"] = addr
+    
+    # Priority 5: City, State ZIP pattern (e.g., "Boston, MA 02101" or "San Francisco, CA 94102")
+    if not info["address"]:
+        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b', text)
+        if m:
+            city, state, zip_code = m.groups()
+            # Validate it's a real location (not random capitalized words)
+            # US states should be 2-letter abbreviations
+            us_states = {
+                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+            }
+            if state in us_states:
+                info["address"] = m.group(0).strip()
+    
+    # Priority 6: City, State pattern without ZIP (e.g., "Waltham, MA" or "Boston, Massachusetts")
+    if not info["address"]:
+        # Try 2-letter state code first
+        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\b', text)
+        if m:
+            city, state = m.groups()
+            us_states = {
+                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+            }
+            if state in us_states:
                 info["address"] = m.group(0).strip()
         else:
             # Try full state name (e.g., "Boston, Massachusetts")
