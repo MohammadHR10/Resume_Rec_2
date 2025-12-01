@@ -23,21 +23,25 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     s = text
     cats = {f.strip().lower() for f in fields if isinstance(f, str) and f.strip()}
 
+    # Helper to check if any field contains a keyword
+    def has_keyword(keyword):
+        return any(keyword in cat for cat in cats)
+
     # Email
-    if any(c in cats for c in ["email", "e-mail"]):
+    if any(c in cats for c in ["email", "e-mail"]) or has_keyword("email"):
         s = re.sub(r"[\w.\-+]+@[\w\-]+(?:\.[\w\-]+)+", "[REDACTED_EMAIL]", s)
 
     # Phone numbers
-    if any(c in cats for c in ["phone", "phone_number", "contact"]):
+    if any(c in cats for c in ["phone", "phone_number", "contact"]) or has_keyword("phone"):
         s = re.sub(r"\+?\d[\d\s().\-]{7,}\d", "[REDACTED_PHONE]", s)
 
     # LinkedIn / GitHub URLs
-    if any(c in cats for c in ["linkedin", "github", "portfolio", "website"]):
+    if any(c in cats for c in ["linkedin", "github", "portfolio", "website"]) or has_keyword("linkedin") or has_keyword("github"):
         s = re.sub(r"https?://(www\.)?(linkedin\.com|github\.com|bit\.ly|linktr\.ee|\S+\.(io|dev|app|site))/\S+",
                    "[REDACTED_LINK]", s, flags=re.IGNORECASE)
 
     # Address lines
-    if "address" in cats:
+    if "address" in cats or has_keyword("address") or has_keyword("location"):
         # Remove explicit Address: lines
         s = re.sub(r"(?im)^\s*(address|location|current\s*address)\s*[:\-].*$", "[REDACTED_ADDRESS]", s)
         # Mask common street patterns
@@ -49,51 +53,50 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         s = re.sub(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\b", "[REDACTED_ADDRESS]", s)
 
     # Name (best-effort): extract name from original, then replace all occurrences
-    if "name" in cats:
-        # Try to extract the actual candidate name from the ORIGINAL text before any redactions
-        candidate_name = None
-        lines = [l.strip() for l in re.split(r"\r?\n", text) if l.strip()]
-        
-        # Check for labeled name first in original text
-        m = re.search(r"(?im)^\s*(name|full\s*name)\s*[:\-]\s*(.+)$", text)
-        if m:
-            candidate_name = re.sub(r"\s+", " ", m.group(2)).strip()
-        else:
-            # Heuristic: first line that looks like a name (letters/spaces, no numbers/emails)
-            for l in lines[:5]:
-                if ("@" in l) or re.search(r"\d", l):
-                    continue
-                if len(l.split()) <= 6 and re.search(r"[A-Za-z]", l):
-                    candidate_name = l
-                    break
+    if "name" in cats or has_keyword("name"):
+        # Use extract_personal_info for smarter name detection
+        personal_info = extract_personal_info(text)
+        candidate_name = personal_info.get('name')
         
         # If we found a name, replace all occurrences of it in the text
         if candidate_name and len(candidate_name) > 2:
             # Escape special regex characters in the name
             escaped_name = re.escape(candidate_name)
+            # Replace full name
             s = re.sub(rf"\b{escaped_name}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
+            
+            # Also replace individual name parts (first/last name alone)
+            name_parts = candidate_name.split()
+            if len(name_parts) >= 2:
+                first_name = name_parts[0]
+                last_name = name_parts[-1]
+                # Only replace if they're reasonably long to avoid false positives
+                if len(first_name) > 2:
+                    s = re.sub(rf"\b{re.escape(first_name)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
+                if len(last_name) > 2:
+                    s = re.sub(rf"\b{re.escape(last_name)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
         
         # Also remove labeled name lines
         s = re.sub(r"(?im)^\s*(name|full\s*name)\s*[:\-].*$", "[REDACTED_NAME]", s)
 
     # Gender
-    if "gender" in cats:
+    if "gender" in cats or has_keyword("gender"):
         s = re.sub(r"(?im)^\s*gender\s*[:\-].*$", "[REDACTED_GENDER]", s)
         s = re.sub(r"\b(male|female|non\-?binary|woman|man|transgender|cisgender)\b",
                    "[REDACTED_GENDER]", s, flags=re.IGNORECASE)
 
     # Age / DOB
-    if any(c in cats for c in ["age", "dob", "date_of_birth"]):
+    if any(c in cats for c in ["age", "dob", "date_of_birth"]) or has_keyword("age") or has_keyword("dob") or has_keyword("birth"):
         s = re.sub(r"(?im)^\s*age\s*[:\-]\s*\d+\b.*$", "[REDACTED_AGE]", s)
         s = re.sub(r"(?im)^\s*(dob|date\s*of\s*birth)\s*[:\-].*$", "[REDACTED_DOB]", s)
         s = re.sub(r"\b\d{1,2}[\-/]\d{1,2}[\-/](\d{2,4})\b", "[REDACTED_DOB]", s)
 
     # Nationality / Marital status / Pronouns
-    if "nationality" in cats:
+    if "nationality" in cats or has_keyword("nationality"):
         s = re.sub(r"(?im)^\s*nationality\s*[:\-].*$", "[REDACTED_NATIONALITY]", s)
-    if "marital_status" in cats:
+    if "marital_status" in cats or has_keyword("marital"):
         s = re.sub(r"(?im)^\s*marital\s*status\s*[:\-].*$", "[REDACTED_MARITAL_STATUS]", s)
-    if "pronouns" in cats:
+    if "pronouns" in cats or has_keyword("pronoun"):
         s = re.sub(r"(?im)^\s*pronouns\s*[:\-].*$", "[REDACTED_PRONOUNS]", s)
 
     # Generic fallback: remove lines containing unknown terms
@@ -153,31 +156,148 @@ def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
     if m:
         info["github"] = m.group(0)
 
-    # Address (line starting with Address/Location or street pattern)
-    m = re.search(r"(?im)^\s*(address|location|current\s*address)\s*[:\-]\s*(.+)$", text)
+    # Address - improved extraction with priority order and validation
+    # Priority 1: Explicit labeled address
+    m = re.search(r"(?im)^\s*(address|location|current\s*address|residence)\s*[:\-]\s*(.+?)(?:\n|$)", text)
     if m:
-        info["address"] = m.group(2).strip()
-    else:
-        # Try to find street address pattern
-        m = re.search(r"\b\d{1,5}\s+\w+(?:\s\w+){0,4}\s(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.)\b[\w\s,.-]*",
-                      text, flags=re.I)
-        if m:
-            street = m.group(0).strip()
-            # Try to find associated city/state/zip pattern nearby
-            m2 = re.search(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?", text)
-            if m2:
-                info["address"] = f"{street}, {m2.group(0)}"
-            else:
-                info["address"] = street
-        else:
-            # Try city/state/zip pattern first
-            m = re.search(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?", text)
-            if m:
-                info["address"] = m.group(0).strip()
-            else:
-                # Try city/state pattern without ZIP (e.g., "Waltham, MA")
-                m = re.search(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\b", text)
+        addr_candidate = m.group(2).strip()
+        # Clean up: remove trailing contact info that might be on same line
+        addr_candidate = re.sub(r'\s*\|\s*[\w.\-+]+@[\w\-]+\.[\w\-]+.*$', '', addr_candidate)
+        addr_candidate = re.sub(r'\s*\|\s*\+?\d[\d\s().\-]+$', '', addr_candidate)
+        # Stop at common section headers
+        addr_candidate = re.split(r'\s+(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b', addr_candidate)[0].strip()
+        if addr_candidate:
+            info["address"] = addr_candidate
+    
+    # Priority 2: Look in header (first 5 lines) for "City, State" or "City, State ZIP" patterns
+    # Common in resume headers like: "Sam Norman | Boston, Massachusetts"
+    elif lines:
+        for l in lines[:5]:
+            # Check for location after pipe or dash in header
+            if '|' in l or '–' in l or '—' in l:
+                # Split by pipe/dash and look for location in latter parts
+                parts = re.split(r'\s*[|–—]\s*', l)
+                for part in parts[1:]:  # Skip first part (usually name)
+                    # Match: "City, State" or "City, State ZIP"
+                    m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5})?$', part.strip())
+                    if m:
+                        info["address"] = part.strip()
+                        break
+                if info["address"]:
+                    break
+            # Also check if line itself is just "City, State" format (without pipes)
+            if not info["address"]:
+                m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$', l.strip())
                 if m:
+                    # Validate state
+                    city, state_part = m.group(1), m.group(2)
+                    us_states = {
+                        'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                        'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                        'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+                    }
+                    us_state_names = {
+                        'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
+                        'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
+                        'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
+                        'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
+                        'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
+                        'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
+                        'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
+                        'Wisconsin','Wyoming','Messachussetts'  # Include common typo
+                    }
+                    if state_part in us_states or state_part in us_state_names:
+                        info["address"] = l.strip()
+                        break
+    
+    # Priority 3: Search first 10 lines for street address patterns
+    if not info["address"] and lines:
+        for l in lines[:10]:
+            # Look for street address in this line
+            m = re.search(
+                r'\d{1,5}\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?)',
+                l
+            )
+            if m:
+                # Found street address in this line
+                street = m.group(0).strip()
+                # Look for city/state after it in same line or next line
+                rest_of_line = l[m.end():].strip()
+                
+                # Try to find city, state in the rest of this line
+                city_state = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?', rest_of_line)
+                if city_state:
+                    info["address"] = f"{street}, {city_state.group(0)}"
+                    break
+                else:
+                    # Just use the street address
+                    info["address"] = street
+                    break
+    
+    # Priority 4: Full street address pattern in entire text
+    if not info["address"]:
+        # Match complete US address: street + city + state + optional ZIP
+        # More precise: stop at newline or end of line
+        m = re.search(
+            r'\d{1,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?),?\s*' +
+            r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?',
+            text
+        )
+        if m:
+            # Extract just the matched address, clean up
+            addr = m.group(0).strip()
+            # Stop at newline or common section markers
+            addr = re.split(r'\n|(?=\b(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b)', addr)[0].strip()
+            # Remove trailing punctuation artifacts
+            addr = re.sub(r'\s*[,;:]\s*$', '', addr)
+            if addr:
+                info["address"] = addr
+    
+    # Priority 5: City, State ZIP pattern (e.g., "Boston, MA 02101" or "San Francisco, CA 94102")
+    if not info["address"]:
+        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b', text)
+        if m:
+            city, state, zip_code = m.groups()
+            # Validate it's a real location (not random capitalized words)
+            # US states should be 2-letter abbreviations
+            us_states = {
+                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+            }
+            if state in us_states:
+                info["address"] = m.group(0).strip()
+    
+    # Priority 6: City, State pattern without ZIP (e.g., "Waltham, MA" or "Boston, Massachusetts")
+    if not info["address"]:
+        # Try 2-letter state code first
+        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\b', text)
+        if m:
+            city, state = m.groups()
+            us_states = {
+                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+            }
+            if state in us_states:
+                info["address"] = m.group(0).strip()
+        else:
+            # Try full state name (e.g., "Boston, Massachusetts")
+            m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', text)
+            if m:
+                city, state = m.groups()
+                # Validate it looks like a US state (common ones)
+                us_state_names = {
+                    'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
+                    'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
+                    'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
+                    'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
+                    'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
+                    'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
+                    'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
+                    'Wisconsin','Wyoming'
+                }
+                if state in us_state_names:
                     info["address"] = m.group(0).strip()
 
     # Pronouns
@@ -195,21 +315,84 @@ def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
     if m:
         info["marital_status"] = m.group(1).strip()
 
-    # Name – prefer explicit label, else use first line heuristic (if looks like a name)
+    # Name – improved heuristics with better filtering
     m = re.search(r"(?im)^\s*(name|full\s*name)\s*[:\-]\s*(.+)$", text)
     if m:
         name_val = re.sub(r"\s+", " ", m.group(2)).strip()
         if 2 <= len(name_val) <= 80:
             info["name"] = name_val
     else:
-        # Heuristic: the very first non-empty line containing letters and spaces, not an email/phone
-        for l in lines[:5]:
-            if ("@" in l) or re.search(r"\d", l):
+        # Common resume section headers to exclude (case-insensitive)
+        section_headers = {
+            'resume', 'curriculum vitae', 'cv', 'summary', 'objective', 'profile',
+            'experience', 'education', 'skills', 'projects', 'certifications',
+            'references', 'contact', 'professional summary', 'work experience',
+            'technical skills', 'qualifications', 'achievements', 'publications'
+        }
+        
+        # Common company/product names that aren't names
+        noise_words = {
+            'cisco', 'hp', 'ibm', 'microsoft', 'google', 'apple', 'amazon',
+            'oracle', 'dell', 'intel', 'vmware', 'aws', 'azure', 'linux'
+        }
+        
+        # Search first 10 lines for best name candidate
+        for l in lines[:10]:
+            l_lower = l.lower().strip()
+            
+            # Skip if it's a section header
+            if l_lower in section_headers:
                 continue
-            # Avoid section headers like "Resume" or role titles with hyphens
-            if len(l.split()) <= 6 and re.search(r"[A-Za-z]", l):
-                info["name"] = l
-                break
+            
+            # Skip if it's a noise word
+            if l_lower in noise_words:
+                continue
+            
+            # Skip if contains URL, email, or phone patterns
+            if ("@" in l) or ("http" in l_lower) or ("www." in l_lower):
+                continue
+            
+            # Skip if has too many numbers (likely not a name)
+            if len(re.findall(r'\d', l)) > 3:
+                continue
+            
+            # Check for header format: "Name | Location" or "Name - Location"
+            # Extract just the name part before pipe or dash
+            if '|' in l:
+                parts = l.split('|')
+                candidate = parts[0].strip()
+                # Validate the part before pipe looks like a name
+                if 2 <= len(candidate.split()) <= 4 and len(candidate) >= 5:
+                    # Check it's mostly letters and spaces
+                    if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', candidate):
+                        info["name"] = candidate
+                        break
+            
+            # Look for format: "FirstName LastName" at start (2-4 words, capitalized)
+            # Must start with capital letter and be 2-4 words
+            if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', l):
+                # Must be reasonable length (not too short, not too long)
+                if 5 <= len(l) <= 50:
+                    # Additional validation: should have at least first + last name
+                    words = l.split()
+                    if len(words) >= 2:
+                        # Check words aren't section headers
+                        if not any(w.lower() in section_headers for w in words):
+                            info["name"] = l
+                            break
+            
+            # Fallback: first line with 2-4 words, mostly alphabetic, proper length
+            words = l.split()
+            if 2 <= len(words) <= 4 and 5 <= len(l) <= 50:
+                # Must be mostly alphabetic (at least 80% letters)
+                letter_count = sum(c.isalpha() or c.isspace() for c in l)
+                if letter_count / len(l) >= 0.8:
+                    # Check first word is capitalized
+                    if words[0][0].isupper():
+                        # Not a section header
+                        if l_lower not in section_headers:
+                            info["name"] = l
+                            break
 
     return info
 
@@ -385,11 +568,19 @@ def extract_pdfs_from_zip(zip_file) -> List[Tuple[str, bytes]]:
                 if file_info.is_dir() or not file_info.filename.lower().endswith('.pdf'):
                     continue
                 
+                # Skip macOS hidden files and metadata
+                if '__MACOSX' in file_info.filename or file_info.filename.startswith('._'):
+                    continue
+                
                 # Extract the PDF content
                 pdf_content = zip_ref.read(file_info.filename)
                 
                 # Get just the filename without path
                 filename = Path(file_info.filename).name
+                
+                # Skip if this is a duplicate filename (in case of weird ZIP structure)
+                if any(existing_name == filename for existing_name, _ in pdf_files):
+                    continue
                 
                 pdf_files.append((filename, pdf_content))
                 
@@ -1085,8 +1276,8 @@ with tab1:
     
     # ---------- Run ----------
     if st.button("🔍 Recommend Candidates"):
-        # Process files first to check if we have any
-        all_resume_files = process_uploaded_files(uploaded_files, uploaded_zip)
+        # Reuse the already-processed files from line 654, don't process again
+        # all_resume_files is already populated above
         
         if not all_resume_files or not job_description:
             st.warning("Please enter the job description and upload at least one resume or a ZIP file containing resumes.")
@@ -1237,7 +1428,9 @@ with tab1:
                             anonymize_list = [c.strip().lower() for c in st.session_state.get('anonymize_fields', [])]
                             if anonymize_list:
                                 # If name is anonymized, assign Candidate N
-                                if 'name' in anonymize_list:
+                                # Check if any field contains "name" (e.g., "name", "individual's name", "candidate name")
+                                has_name = any('name' in field for field in anonymize_list)
+                                if has_name:
                                     st.session_state.candidate_index += 1
                                     placeholder = f"Candidate {st.session_state.candidate_index}"
                                     # Override displayed candidate name
@@ -1253,9 +1446,21 @@ with tab1:
                                 redaction_map: Dict[str, Any] = {}
                                 for cat in anonymize_list:
                                     candidates: List[str] = []
+                                    
+                                    # Map custom field names to standard extraction keys
+                                    extraction_key = cat
+                                    if 'name' in cat:
+                                        extraction_key = 'name'
+                                    elif 'address' in cat or 'location' in cat:
+                                        extraction_key = 'address'
+                                    elif 'email' in cat:
+                                        extraction_key = 'email'
+                                    elif 'phone' in cat:
+                                        extraction_key = 'phone'
+                                    
                                     # 1) Use extracted values if available
-                                    if cat in extracted and extracted[cat]:
-                                        candidates.append(str(extracted[cat]))
+                                    if extraction_key in extracted and extracted[extraction_key]:
+                                        candidates.append(str(extracted[extraction_key]))
                                     # 2) Look for label-style lines: "cat: value"
                                     label_pat = rf"(?im)^\s*{re.escape(cat)}\s*[:\-]\s*(.+)$"
                                     for m in re.finditer(label_pat, original_text):
