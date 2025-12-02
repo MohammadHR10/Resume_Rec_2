@@ -863,11 +863,11 @@ with tab1:
         lines = [
             # Core - REMOVED experience_relevance (duplicate)
             '"key_strengths": ["strength1", "strength2", "strength3"],',
-            '"key_strengths_score": "<score based on definition>",',
+            '"key_strengths_score": "<score value only: e.g. 3, Medium, Green, 85%, B - NOT 3/5 or Medium/5>",',
             '"key_strengths_explanation": "<why this score was given for key strengths>",',
-            '"experience_score": "<score based on definition>",',
+            '"experience_score": "<score value only: e.g. 4, High, Red, 70%, A - NOT 4/5 or High/5>",',
             '"experience_explanation": "<why this score was given for experience and relevance to role>",',
-            '"skills_match_score": "<score based on definition>",',
+            '"skills_match_score": "<score value only: e.g. 2, Low, Yellow, 60%, C - NOT 2/5 or Low/5>",',
             '"skills_match_explanation": "<short, concrete rationale>",',
             '"potential_concerns": ["concern1", "concern2"],',
             '"recommendation": "<exactly one of: Recommended, Consider, Pass>",',
@@ -886,11 +886,11 @@ with tab1:
             else:
                 lines.append(f'"{f["name"]}": "<string>",')
             # score + explanation (dynamic scoring based on instruction)
-            lines.append(f'"{f["name"]}_score": "<score as defined in instruction>",')
+            lines.append(f'"{f["name"]}_score": "<score value only - do NOT add /5>",')
             lines.append(f'"{f["name"]}_explanation": "<short rationale tied to resume evidence>",')
     
         # Model provides overall score - no recomputing
-        lines.append('"overall_score": "<score based on definition>",')
+        lines.append('"overall_score": "<score value only - do NOT add /5>",')
         lines.append('"overall_explanation": "<1–2 sentences summarizing the key drivers from the subscores>",')
     
         lines.append('"custom_considerations": [')
@@ -938,28 +938,44 @@ with tab1:
     CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
     {rules_payload}
     
+    INSTRUCTION EXAMPLES (how to interpret and apply):
+    - "if no volunteering, give 10" → Check resume → No volunteering found → Set score to 10 → Mark applied=true
+    - "if University outside Texas, score < 2" → Check resume → University in California → Set score to 1 → Mark applied=true
+    - "rate leadership as Strong/Weak" → Evaluate leadership → Determine "Strong" or "Weak" → Set score to chosen value
+    
     EVALUATION RULES (follow ALL):
     1) {key_strengths_def}
        - The definition above specifies HOW to score this field (e.g., 1-5, Red/Yellow/Green, percentage, letter grade, etc.)
        - Use EXACTLY the scoring system described in the definition
+       - Output ONLY the score value (e.g., "3", "Red", "85%", "B") - do NOT add "/5" or other suffixes
     2) {experience_def}
        - The definition above specifies HOW to score this field
        - Use EXACTLY the scoring system described in the definition
+       - Output ONLY the score value - do NOT add "/5" or other suffixes
     3) {skills_match_def}
        - The definition above specifies HOW to score this field
        - Use EXACTLY the scoring system described in the definition
+       - Output ONLY the score value - do NOT add "/5" or other suffixes
     4) For EACH custom field, extract value AND provide score according to its instruction AND explanation
        - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
        - Use EXACTLY the scoring system specified in that field's instruction
+       - Output ONLY the score value - do NOT add "/5", "out of 5", or other suffixes
        - If no specific scoring is mentioned, provide a qualitative assessment
-    5) If instruction sets threshold/condition, set that field's score accordingly and note impact
+       - MANDATORY: If the instruction says "give them 10", "set score to X", "rate as Y", you MUST assign that exact score
+    5) If instruction sets threshold/condition (e.g., "if X then score=10"), YOU MUST evaluate the condition and set the score accordingly
+       - Example: "if no volunteering, give 10" → Check resume for volunteering → If absent, set score to 10
+       - Document this logic in custom_considerations with applied=true and explain the impact
     6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
        - Use the same scoring system as defined for overall evaluation
-    7) If custom field has low score due to instruction, let it significantly impact overall_score
+       - Output ONLY the score value - do NOT add "/5" or other suffixes
+    7) Custom field scores based on instructions MUST significantly impact overall_score
+       - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
+       - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
     8) overall_explanation should summarize key drivers from subscores
     9) Keep all text values concise and avoid special characters, newlines, or control characters
-    10) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
-    11) Return ONLY the JSON object"""
+    10) CRITICAL: Score fields should contain ONLY the score value itself (e.g., "Medium", "B", "3"), NOT "Medium/5" or "B/5"
+    11) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
+    12) Return ONLY the JSON object"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
