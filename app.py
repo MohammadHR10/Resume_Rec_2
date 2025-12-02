@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Tuple, Type, Literal
+from typing import List, Dict, Any, Optional, Tuple, Type, Literal, Union
 from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral
@@ -504,15 +504,16 @@ class Consideration(BaseModel):
     impact: str
 
 # Core sections - REMOVED experience_relevance_score (duplicate)
+# Scores now accept any format (string, number, etc.) for dynamic scoring systems
 BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
     'key_strengths': (List[str], ...),
-    'key_strengths_score': (float, Field(ge=1, le=5)),
+    'key_strengths_score': (Union[str, int, float], ...),  # Dynamic: can be "Red", 5, "85%", etc.
     'key_strengths_explanation': (str, ...),
 
-    'experience_score': (float, Field(ge=1, le=5)),
+    'experience_score': (Union[str, int, float], ...),  # Dynamic scoring
     'experience_explanation': (str, ...),
 
-    'skills_match_score': (float, Field(ge=1, le=5)),
+    'skills_match_score': (Union[str, int, float], ...),  # Dynamic scoring
     'skills_match_explanation': (str, ...),
 
     'potential_concerns': (List[str], ...),
@@ -523,7 +524,7 @@ BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
     'department': (str, ...),
 
     # Use model's overall score (no recomputing)
-    'overall_score': (float, Field(ge=1, le=5)),
+    'overall_score': (Union[str, int, float], ...),  # Dynamic scoring
     'overall_explanation': (str, ...),
 
     'custom_considerations': (List[Consideration], ...),
@@ -540,14 +541,15 @@ def take_dynamic_input(t: str, enum_vals: Optional[list] = None) -> Tuple[Type[A
     return (str, ...)
 
 # For each custom field X, add:
-#   X (typed value), X_score: 1–5, X_explanation: str
+#   X (typed value), X_score: dynamic (can be any format), X_explanation: str
 def build_dynamic_model(custom_fields: list) -> Type[BaseModel]:
     fields = dict(BASE_FIELDS)
     # Only include supported types: string and boolean
     for f in [cf for cf in custom_fields if cf.get('type') in ('string', 'boolean')]:
         enum_vals = None
         fields[f['name']] = take_dynamic_input(f['type'], enum_vals)
-        fields[f"{f['name']}_score"] = (Optional[float], Field(default=None, ge=1, le=5))
+        # Dynamic scoring: accept string (e.g., "Red", "High") or number (e.g., 5, 85)
+        fields[f"{f['name']}_score"] = (Optional[Union[str, int, float]], Field(default=None))
         fields[f"{f['name']}_explanation"] = (Optional[str], Field(default=None))
     Model = create_model('EvaluationModel', **fields)
     Model.model_config = {"extra": "forbid"}
@@ -645,20 +647,20 @@ with tab1:
         st.session_state.core_criteria_defs = {
             'key_strengths': {
                 'custom': False,
-                'definition': "Score key_strengths (1–5) based on job requirements"
+                'definition': "Evaluate key_strengths based on job requirements. Score from 1 (Poor) to 5 (Exceptional)."
             },
             'experience': {
                 'custom': False,
-                'definition': "Score experience (1–5) covering both years of experience AND relevance to this specific role"
+                'definition': "Evaluate experience covering both years of experience AND relevance to this specific role. Score from 1 (Poor) to 5 (Exceptional)."
             },
             'skills_match': {
                 'custom': False,
-                'definition': "Score skills_match (1–5) for technical/functional skill alignment"
+                'definition': "Evaluate skills_match for technical/functional skill alignment. Score from 1 (Poor) to 5 (Exceptional)."
             }
         }
 
     with st.expander("Define Core Criteria"):
-        st.info("You can customize what Key Strengths, Experience, and Skills Match mean for your evaluation, or use the default definitions.")
+        st.info("📊 **Dynamic Scoring**: Customize what Key Strengths, Experience, and Skills Match mean for your evaluation. You can define ANY scoring system (e.g., 1-5, Red/Yellow/Green, percentages, A/B/C grades, etc.). The AI will adapt to your instructions.")
         
         # Key Strengths definition
         st.write("**Key Strengths Definition**")
@@ -672,12 +674,13 @@ with tab1:
             key_strengths_def = st.text_area(
                 "Define what Key Strengths means for this evaluation:",
                 value=st.session_state.core_criteria_defs['key_strengths']['definition'],
-                placeholder="Example: Key strengths should prioritize leadership abilities, technical expertise, and communication skills",
+                placeholder="Example: Evaluate leadership abilities, technical expertise, and communication skills. Rate as Strong/Moderate/Weak.",
+                help="Define HOW to evaluate and score this field (e.g., '1-5', 'High/Medium/Low', 'Red/Yellow/Green', percentages, etc.)",
                 height=80,
                 key="key_strengths_def"
             )
         else:
-            key_strengths_def = "Score key_strengths (1–5) based on job requirements"
+            key_strengths_def = "Evaluate key_strengths based on job requirements. Score from 1 (Poor) to 5 (Exceptional)."
         
         # Experience definition
         st.write("**Experience Definition**")
@@ -691,12 +694,13 @@ with tab1:
             experience_def = st.text_area(
                 "Define what Experience means for this evaluation:",
                 value=st.session_state.core_criteria_defs['experience']['definition'],
-                placeholder="Example: Experience should emphasize industry-specific background and relevant project work",
+                placeholder="Example: Evaluate industry-specific background and relevant project work. Rate as Exceeds/Meets/Below expectations.",
+                help="Define HOW to evaluate and score this field (e.g., '1-5', 'A/B/C', percentages, qualitative assessment, etc.)",
                 height=80,
                 key="experience_def"
             )
         else:
-            experience_def = "Score experience (1–5) covering both years of experience AND relevance to this specific role"
+            experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Score from 1 (Poor) to 5 (Exceptional)."
         
         # Skills Match definition
         st.write("**Skills Match Definition**")
@@ -710,12 +714,13 @@ with tab1:
             skills_match_def = st.text_area(
                 "Define what Skills Match means for this evaluation:",
                 value=st.session_state.core_criteria_defs['skills_match']['definition'],
-                placeholder="Example: Skills match should focus on technical proficiencies listed in job description",
+                placeholder="Example: Evaluate technical proficiencies listed in job description. Score as percentage match (0-100%).",
+                help="Define HOW to evaluate and score this field (e.g., '1-5', percentages, 'Complete/Partial/None', etc.)",
                 height=80,
                 key="skills_match_def"
             )
         else:
-            skills_match_def = "Score skills_match (1–5) for technical/functional skill alignment"
+            skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Score from 1 (Poor) to 5 (Exceptional)."
         
         # Save button
         if st.button("Apply Core Criteria Definitions"):
@@ -748,9 +753,11 @@ with tab1:
             "Instruction for how to use this category in evaluation",
             placeholder=(
                 "Examples:\n"
-                "- If University is outside Texas, set <field>_score < 2 and explain why.\n"
-                "- If publications ≥ 2, set <field>_score ≥ 4 with brief justification.\n"
+                "- Evaluate University location. Score as 'In-State' or 'Out-of-State'.\n"
+                "- Count publications. Rate as High (≥3), Medium (1-2), or Low (0).\n"
+                "- Assess leadership experience. Score 1-10 based on years and impact.\n"
             ),
+            help="Define WHAT to evaluate and HOW to score it. You can use any scoring system (numbers, colors, categories, etc.)",
             height=120
         )
     
@@ -761,10 +768,10 @@ with tab1:
                     'type': field_type,
                     'enum_vals': None,
                     'instruction': (instruction or "").strip() or
-                                   "If relevant, set <field>_score (1–5) with one-sentence explanation referencing resume evidence."
+                                   "Evaluate this field and provide a score with explanation based on resume evidence."
                 }
                 st.session_state.custom_fields.append(new_field)
-                st.success(f"Added field: {field_name}")
+                st.success(f"✅ Added field: {field_name}")
                 st.rerun()
     
     # Display + remove
@@ -856,11 +863,11 @@ with tab1:
         lines = [
             # Core - REMOVED experience_relevance (duplicate)
             '"key_strengths": ["strength1", "strength2", "strength3"],',
-            '"key_strengths_score": <number 1-5>,',
+            '"key_strengths_score": "<score based on definition>",',
             '"key_strengths_explanation": "<why this score was given for key strengths>",',
-            '"experience_score": <number 1-5>,',
+            '"experience_score": "<score based on definition>",',
             '"experience_explanation": "<why this score was given for experience and relevance to role>",',
-            '"skills_match_score": <number 1-5>,',
+            '"skills_match_score": "<score based on definition>",',
             '"skills_match_explanation": "<short, concrete rationale>",',
             '"potential_concerns": ["concern1", "concern2"],',
             '"recommendation": "<exactly one of: Recommended, Consider, Pass>",',
@@ -878,16 +885,16 @@ with tab1:
                 lines.append(f'"{f["name"]}": <true|false>,')
             else:
                 lines.append(f'"{f["name"]}": "<string>",')
-            # score + explanation
-            lines.append(f'"{f["name"]}_score": <number 1-5>,')
+            # score + explanation (dynamic scoring based on instruction)
+            lines.append(f'"{f["name"]}_score": "<score as defined in instruction>",')
             lines.append(f'"{f["name"]}_explanation": "<short rationale tied to resume evidence>",')
     
         # Model provides overall score - no recomputing
-        lines.append('"overall_score": <number 1-5>,')
+        lines.append('"overall_score": "<score based on definition>",')
         lines.append('"overall_explanation": "<1–2 sentences summarizing the key drivers from the subscores>",')
     
         lines.append('"custom_considerations": [')
-        lines.append('  { "field": "<field name>", "instruction": "<the HR rule text>", "applied": <true|false>, "impact": "<what changed (e.g., university_score→1) and effect on overall>" }')
+        lines.append('  { "field": "<field name>", "instruction": "<the HR rule text>", "applied": <true|false>, "impact": "<what changed and effect on overall>" }')
         lines.append(']')
     
         return "{\n" + "\n".join(lines) + "\n}"
@@ -911,13 +918,11 @@ with tab1:
             experience_def = st.session_state.core_criteria_defs['experience']['definition']
             skills_match_def = st.session_state.core_criteria_defs['skills_match']['definition']
         else:
-            key_strengths_def = "Score key_strengths (1–5) based on job requirements"
-            experience_def = "Score experience (1–5) covering both years of experience AND relevance to this specific role"
-            skills_match_def = "Score skills_match (1–5) for technical/functional skill alignment"
+            key_strengths_def = "Evaluate key_strengths based on job requirements. Use the scoring system defined in your evaluation criteria."
+            experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Use the scoring system defined in your evaluation criteria."
+            skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Use the scoring system defined in your evaluation criteria."
     
         return f"""You are an expert hiring manager. Return STRICT JSON only—no prose/markdown/fences.
-    
-    SCORING SCALE (1-5): 5 Exceptional · 4 Strong · 3 Good · 2 Fair · 1 Poor
     
     REQUIRED JSON (exact keys/types):
     {schema}
@@ -935,15 +940,26 @@ with tab1:
     
     EVALUATION RULES (follow ALL):
     1) {key_strengths_def}
+       - The definition above specifies HOW to score this field (e.g., 1-5, Red/Yellow/Green, percentage, letter grade, etc.)
+       - Use EXACTLY the scoring system described in the definition
     2) {experience_def}
+       - The definition above specifies HOW to score this field
+       - Use EXACTLY the scoring system described in the definition
     3) {skills_match_def}
-    4) For EACH custom field, extract value AND provide score (1–5) AND explanation
+       - The definition above specifies HOW to score this field
+       - Use EXACTLY the scoring system described in the definition
+    4) For EACH custom field, extract value AND provide score according to its instruction AND explanation
+       - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
+       - Use EXACTLY the scoring system specified in that field's instruction
+       - If no specific scoring is mentioned, provide a qualitative assessment
     5) If instruction sets threshold/condition, set that field's score accordingly and note impact
     6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
+       - Use the same scoring system as defined for overall evaluation
     7) If custom field has low score due to instruction, let it significantly impact overall_score
     8) overall_explanation should summarize key drivers from subscores
     9) Keep all text values concise and avoid special characters, newlines, or control characters
-    10) Return ONLY the JSON object"""
+    10) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
+    11) Return ONLY the JSON object"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
@@ -958,7 +974,9 @@ with tab1:
         for field in custom_fields:
             prompt = (
                 f"Custom field '{field['name']}' with instruction '{field['instruction']}'. "
-                f"Explain briefly how to compute a 1–5 score and give one example using resume evidence."
+                f"Explain briefly how to evaluate this field based on the instruction provided. "
+                f"If the instruction specifies a scoring system (e.g., 1-5, colors, percentages), describe that system. "
+                f"Give one example of how you would score a candidate using resume evidence."
             )
             out.append(call_mistral(prompt))
         return out
