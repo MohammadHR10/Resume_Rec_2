@@ -923,59 +923,67 @@ with tab1:
             skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Use the scoring system defined in your evaluation criteria."
     
         return f"""You are an expert hiring manager. Return STRICT JSON only—no prose/markdown/fences.
+
+CRITICAL FORMATTING RULE: 
+- For ALL score fields, output ONLY the raw score value itself
+- NEVER add "/5", "out of 5", "/3", or any suffix after scores
+- Examples of CORRECT outputs: 3, Poor, Red, 85%, B
+- Examples of INCORRECT outputs: 3/5, Poor/5, Red/5, 85%/5, B/5
     
-    REQUIRED JSON (exact keys/types):
-    {schema}
-    
-    JOB:
-    Title: {job_title}
-    Department: {department}
-    Description: {job_description}
-    
-    RESUME (verbatim evidence source):
-    {resume_text}
-    
-    CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
-    {rules_payload}
-    
-    INSTRUCTION EXAMPLES (how to interpret and apply):
-    - "if no volunteering, give 10" → Check resume → No volunteering found → Set score to 10 → Mark applied=true
-    - "if University outside Texas, score < 2" → Check resume → University in California → Set score to 1 → Mark applied=true
-    - "rate leadership as Strong/Weak" → Evaluate leadership → Determine "Strong" or "Weak" → Set score to chosen value
-    
-    EVALUATION RULES (follow ALL):
-    1) {key_strengths_def}
-       - The definition above specifies HOW to score this field (e.g., 1-5, Red/Yellow/Green, percentage, letter grade, etc.)
-       - Use EXACTLY the scoring system described in the definition
-       - Output ONLY the score value (e.g., "3", "Red", "85%", "B") - do NOT add "/5" or other suffixes
-    2) {experience_def}
-       - The definition above specifies HOW to score this field
-       - Use EXACTLY the scoring system described in the definition
-       - Output ONLY the score value - do NOT add "/5" or other suffixes
-    3) {skills_match_def}
-       - The definition above specifies HOW to score this field
-       - Use EXACTLY the scoring system described in the definition
-       - Output ONLY the score value - do NOT add "/5" or other suffixes
-    4) For EACH custom field, extract value AND provide score according to its instruction AND explanation
-       - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
-       - Use EXACTLY the scoring system specified in that field's instruction
-       - Output ONLY the score value - do NOT add "/5", "out of 5", or other suffixes
-       - If no specific scoring is mentioned, provide a qualitative assessment
-       - MANDATORY: If the instruction says "give them 10", "set score to X", "rate as Y", you MUST assign that exact score
-    5) If instruction sets threshold/condition (e.g., "if X then score=10"), YOU MUST evaluate the condition and set the score accordingly
-       - Example: "if no volunteering, give 10" → Check resume for volunteering → If absent, set score to 10
-       - Document this logic in custom_considerations with applied=true and explain the impact
-    6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
-       - Use the same scoring system as defined for overall evaluation
-       - Output ONLY the score value - do NOT add "/5" or other suffixes
-    7) Custom field scores based on instructions MUST significantly impact overall_score
-       - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
-       - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
-    8) overall_explanation should summarize key drivers from subscores
-    9) Keep all text values concise and avoid special characters, newlines, or control characters
-    10) CRITICAL: Score fields should contain ONLY the score value itself (e.g., "Medium", "B", "3"), NOT "Medium/5" or "B/5"
-    11) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
-    12) Return ONLY the JSON object"""
+REQUIRED JSON (exact keys/types):
+{schema}
+
+JOB:
+Title: {job_title}
+Department: {department}
+Description: {job_description}
+
+RESUME (verbatim evidence source):
+{resume_text}
+
+CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
+{rules_payload}
+
+INSTRUCTION EXAMPLES (how to interpret and apply):
+- "if no volunteering, give 10" → Check resume → No volunteering found → Set score to 10 → Mark applied=true
+- "if University outside Texas, score < 2" → Check resume → University in California → Set score to 1 → Mark applied=true
+- "rate leadership as Strong/Weak" → Evaluate leadership → Determine "Strong" or "Weak" → Set score to chosen value
+
+EVALUATION RULES (follow ALL):
+1) {key_strengths_def}
+   - The definition above specifies HOW to score this field (e.g., 1-5, Red/Yellow/Green, percentage, letter grade, etc.)
+   - Use EXACTLY the scoring system described in the definition
+   - Output ONLY the score value (e.g., "3", "Red", "85%", "B") - NEVER add "/5" or "/3" or any suffix
+2) {experience_def}
+   - The definition above specifies HOW to score this field
+   - Use EXACTLY the scoring system described in the definition
+   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+3) {skills_match_def}
+   - The definition above specifies HOW to score this field
+   - Use EXACTLY the scoring system described in the definition
+   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+4) For EACH custom field, extract value AND provide score according to its instruction AND explanation
+   - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
+   - Use EXACTLY the scoring system specified in that field's instruction
+   - Output ONLY the score value - NEVER add "/5", "out of 5", "/3", or any suffix
+   - If no specific scoring is mentioned, provide a qualitative assessment
+   - MANDATORY: If the instruction says "give them 10", "set score to X", "rate as Y", you MUST assign that exact score
+5) If instruction sets threshold/condition (e.g., "if X then score=10"), YOU MUST evaluate the condition and set the score accordingly
+   - Example: "if no volunteering, give 10" → Check resume for volunteering → If absent, set score to 10
+   - Document this logic in custom_considerations with applied=true and explain the impact
+6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
+   - Use the same scoring system as defined for overall evaluation
+   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+7) Custom field scores based on instructions MUST significantly impact overall_score
+   - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
+   - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
+8) overall_explanation should summarize key drivers from subscores
+9) Keep all text values concise and avoid special characters, newlines, or control characters
+10) ABSOLUTE PROHIBITION: NEVER output "1/5", "2/5", "3/5", "Poor/5", "Medium/5", "High/5", or ANY score with a slash and number after it
+11) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
+12) Return ONLY the JSON object
+
+FINAL REMINDER: Check every score field before outputting - if you see "/5" or "/3" anywhere, REMOVE IT. Output only: 1, 2, 3, Poor, Medium, High, Red, etc."""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
@@ -1531,13 +1539,13 @@ with tab1:
                             # ------- UI: core sections (REMOVED experience_relevance) -------
                             col1, col2 = st.columns([1, 2])
                             with col1:
-                                st.metric("Key Strengths", f"{evaluation.key_strengths_score}/5")
+                                st.metric("Key Strengths", f"{evaluation.key_strengths_score}")
                                 st.caption(f"💭 {evaluation.key_strengths_explanation}")
     
-                                st.metric("Experience", f"{evaluation.experience_score}/5")
+                                st.metric("Experience", f"{evaluation.experience_score}")
                                 st.caption(f"💭 {evaluation.experience_explanation}")
     
-                                st.metric("Skills Match", f"{evaluation.skills_match_score}/5")
+                                st.metric("Skills Match", f"{evaluation.skills_match_score}")
                                 st.caption(f"💭 {evaluation.skills_match_explanation}")
     
                             with col2:
@@ -1561,7 +1569,7 @@ with tab1:
                                     expl = getattr(evaluation, f"{fname}_explanation", None)
     
                                     if sval is not None:
-                                        st.metric(label, f"{sval}/5")
+                                        st.metric(label, f"{sval}")
                                         if val is not None:
                                             st.caption(f"• Value: {val}")
                                         if expl:
@@ -1585,7 +1593,7 @@ with tab1:
                             st.divider()
                             cols = st.columns([1, 4])
                             with cols[0]:
-                                st.metric("Overall Score", f"{evaluation.overall_score}/5")
+                                st.metric("Overall Score", f"{evaluation.overall_score}")
                             with cols[1]:
                                 st.info(f"**Recommendation:** {evaluation.recommendation}")
                                 st.caption(f"💭 {evaluation.overall_explanation}")
