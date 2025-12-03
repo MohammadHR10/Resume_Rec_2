@@ -1,7 +1,9 @@
 from pdfminer.high_level import extract_text
+from pdfminer.layout import LAParams
 from pdfminer.pdfparser import PDFSyntaxError
 import io
 import logging
+import re
 
 # Import fallback libraries
 try:
@@ -45,15 +47,36 @@ def extract_text_from_pdf(uploaded_file):
         logger.warning("File does not start with %PDF- header - may not be a valid PDF")
         # Continue anyway - sometimes header is offset
     
-    # Method 1: Try pdfminer.six first (original method)
+    # Method 1: Try pdfminer.six first with LAParams for better text extraction
     try:
         pdf_file = io.BytesIO(pdf_bytes)
-        text = extract_text(pdf_file)
+        
+        # Configure LAParams for better text extraction
+        # These parameters help maintain proper spacing and layout
+        laparams = LAParams(
+            line_margin=0.5,        # Vertical margin between lines (helps separate lines)
+            word_margin=0.1,        # Horizontal margin between words (helps separate words)
+            char_margin=2.0,        # Margin between characters (helps group characters into words)
+            boxes_flow=0.5,         # Flow of text boxes (helps maintain reading order)
+            detect_vertical=True,   # Detect vertical text
+            all_texts=True          # Extract all text including annotations
+        )
+        
+        text = extract_text(pdf_file, laparams=laparams)
+        
         if text and text.strip():
-            logger.info(f"✓ pdfminer extracted text (length: {len(text)})")
-            print(f"Extracted text length: {len(text)}")
-            print(f"First 200 characters: {text[:200]}")
-            return text
+            # Clean up the text - remove excessive whitespace while preserving structure
+            lines = text.split('\n')
+            cleaned_lines = [line.strip() for line in lines]
+            cleaned_text = '\n'.join(cleaned_lines)
+            
+            # Remove multiple consecutive blank lines (keep max 1 blank line)
+            cleaned_text = re.sub(r'\n\n\n+', '\n\n', cleaned_text)
+            
+            logger.info(f"✓ pdfminer extracted text (length: {len(cleaned_text)})")
+            print(f"Extracted text length: {len(cleaned_text)}")
+            print(f"First 200 characters: {cleaned_text[:200]}")
+            return cleaned_text
         else:
             logger.info("pdfminer returned empty text, trying fallback methods")
     except PDFSyntaxError as e:

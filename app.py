@@ -31,9 +31,13 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     if any(c in cats for c in ["email", "e-mail"]) or has_keyword("email"):
         s = re.sub(r"[\w.\-+]+@[\w\-]+(?:\.[\w\-]+)+", "[REDACTED_EMAIL]", s)
 
-    # Phone numbers
+    # Phone numbers - improved pattern to avoid matching decimal numbers like GPA
     if any(c in cats for c in ["phone", "phone_number", "contact"]) or has_keyword("phone"):
-        s = re.sub(r"\+?\d[\d\s().\-]{7,}\d", "[REDACTED_PHONE]", s)
+        # Match phone patterns: (123) 456-7890, 123-456-7890, +1 123 456 7890, etc.
+        # Requires at least one separator (space, dash, paren) to avoid matching simple decimals
+        s = re.sub(r"\b\+?\d{1,3}?[\s\-\.]?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}\b", "[REDACTED_PHONE]", s)
+        # Also match international format with + prefix
+        s = re.sub(r"\+\d{1,3}\s?\d{1,4}\s?\d{1,4}\s?\d{1,9}", "[REDACTED_PHONE]", s)
 
     # LinkedIn / GitHub URLs
     if any(c in cats for c in ["linkedin", "github", "portfolio", "website"]) or has_keyword("linkedin") or has_keyword("github"):
