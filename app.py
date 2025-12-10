@@ -551,13 +551,45 @@ def build_dynamic_model(custom_fields: list) -> Type[BaseModel]:
     # Only include supported types: string and boolean
     for f in [cf for cf in custom_fields if cf.get('type') in ('string', 'boolean')]:
         enum_vals = None
-        fields[f['name']] = take_dynamic_input(f['type'], enum_vals)
+        # Normalize field name: replace spaces with underscores for valid Python identifiers
+        field_name = f['name'].strip().replace(' ', '_').lower()
+        # Make custom fields Optional with default None so missing fields don't break validation
+        if f['type'] == 'boolean':
+            fields[field_name] = (Optional[bool], Field(default=None))
+        else:
+            fields[field_name] = (Optional[str], Field(default=None))
         # Dynamic scoring: accept string (e.g., "Red", "High") or number (e.g., 5, 85)
-        fields[f"{f['name']}_score"] = (Optional[Union[str, int, float]], Field(default=None))
-        fields[f"{f['name']}_explanation"] = (Optional[str], Field(default=None))
+        fields[f"{field_name}_score"] = (Optional[Union[str, int, float]], Field(default=None))
+        fields[f"{field_name}_explanation"] = (Optional[str], Field(default=None))
     Model = create_model('EvaluationModel', **fields)
-    Model.model_config = {"extra": "forbid"}
+    Model.model_config = {"extra": "ignore"}  # Allow extra fields from LLM without failing
     return Model
+
+# ---------- JSON key normalizer for LLM responses ----------
+def normalize_json_keys(data: dict) -> dict:
+    """Normalize JSON keys from LLM response to match Pydantic model field names.
+    - Converts spaces to underscores
+    - Lowercases all keys
+    - Handles nested structures
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    normalized = {}
+    for key, value in data.items():
+        # Normalize key: strip, lowercase, replace spaces with underscores
+        norm_key = key.strip().lower().replace(' ', '_')
+        # Recursively normalize nested dicts
+        if isinstance(value, dict):
+            normalized[norm_key] = normalize_json_keys(value)
+        elif isinstance(value, list):
+            normalized[norm_key] = [
+                normalize_json_keys(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            normalized[norm_key] = value
+    return normalized
 
 # ---------- ZIP file processing ----------
 def extract_pdfs_from_zip(zip_file) -> List[Tuple[str, bytes]]:
@@ -882,16 +914,18 @@ with tab1:
     
         # Only support string and boolean custom fields
         for f in [cf for cf in custom_fields if cf.get('type') in ('string','boolean')]:
+            # Normalize field name: spaces → underscores, lowercase
+            field_name = f["name"].strip().replace(' ', '_').lower()
             # value
             if f["type"] == "string":
-                lines.append(f'"{f["name"]}": "<string>",')
+                lines.append(f'"{field_name}": "<string or null if not found>",')
             elif f["type"] == "boolean":
-                lines.append(f'"{f["name"]}": <true|false>,')
+                lines.append(f'"{field_name}": <true|false|null>,')
             else:
-                lines.append(f'"{f["name"]}": "<string>",')
+                lines.append(f'"{field_name}": "<string or null if not found>",')
             # score + explanation (dynamic scoring based on instruction)
-            lines.append(f'"{f["name"]}_score": "<score value only - do NOT add /5>",')
-            lines.append(f'"{f["name"]}_explanation": "<short rationale tied to resume evidence>",')
+            lines.append(f'"{field_name}_score": "<score value only - do NOT add /5, or null if unseen/not applicable>",')
+            lines.append(f'"{field_name}_explanation": "<short rationale tied to resume evidence, or null if not applicable>",')
     
         # Model provides overall score - no recomputing
         lines.append('"overall_score": "<score value only - do NOT add /5>",')
@@ -911,8 +945,9 @@ with tab1:
         resume_text: str
     ) -> str:
         schema = schema_text(job_title, department, job_description, custom_fields)
+        # Normalize field names in rules payload to match schema (spaces → underscores)
         rules_payload = json.dumps(
-            [{"field": f["name"], "instruction": f.get("instruction", "")} for f in custom_fields],
+            [{"field": f["name"].strip().replace(' ', '_').lower(), "instruction": f.get("instruction", "")} for f in custom_fields],
             ensure_ascii=False
         )
         
@@ -1467,8 +1502,21 @@ FINAL REMINDER: Check every score field before outputting - if you see "/5" or "
                                         st.write(f"Cleaned JSON length: {len(cleaned) if cleaned else 'N/A'}")
                                         continue
     
+                            # Normalize JSON keys before validation (spaces → underscores, lowercase)
+                            data = normalize_json_keys(data)
+                            
                             # Validate with dynamic Pydantic model
-                            evaluation = EvaluationModel(**data)
+                            try:
+                                evaluation = EvaluationModel(**data)
+                            except ValidationError as ve:
+                                # Log validation error but try to proceed with partial data
+                                st.warning(f"⚠️ Validation warning: Some fields may be missing or malformed. {ve}")
+                                # Fill missing required fields with None and retry
+                                model_fields = EvaluationModel.model_fields
+                                for field_name in model_fields:
+                                    if field_name not in data:
+                                        data[field_name] = None
+                                evaluation = EvaluationModel.model_construct(**data)
 
                             # If any field is anonymized, capture the mapping
                             anonymize_list = [c.strip().lower() for c in st.session_state.get('anonymize_fields', [])]
