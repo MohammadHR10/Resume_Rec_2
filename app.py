@@ -1099,8 +1099,9 @@ FINAL REMINDER: Check every score field before outputting - if you see "/5" or "
             for field in evaluations_with_metadata[0]["custom_fields"]:
                 if field.get('type') not in ("string", "boolean"):
                     continue
-                field_name = field['name']
-                field_display = field_name.replace('_', ' ').title()
+                # Use normalized field name (matching Pydantic model)
+                field_name = field['name'].strip().replace(' ', '_').lower()
+                field_display = field['name'].replace('_', ' ').title()  # Display uses original for readability
                 custom_field_names.append(field_name)
                 custom_value_headers.append(f"{field_display} Value")
                 custom_score_headers.append(f"{field_display} Score")
@@ -1614,8 +1615,9 @@ FINAL REMINDER: Check every score field before outputting - if you see "/5" or "
                             if st.session_state.custom_fields:
                                 st.write("**📊 Custom Fields**")
                                 for field in st.session_state.custom_fields:
-                                    fname = field['name']
-                                    label = fname.replace('_', ' ').title()
+                                    # Use normalized field name to match Pydantic model
+                                    fname = field['name'].strip().replace(' ', '_').lower()
+                                    label = field['name'].replace('_', ' ').title()  # Display original for readability
                                     val = getattr(evaluation, fname, None)
                                     sval = getattr(evaluation, f"{fname}_score", None)
                                     expl = getattr(evaluation, f"{fname}_explanation", None)
