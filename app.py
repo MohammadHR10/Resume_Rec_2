@@ -923,9 +923,9 @@ with tab1:
                 lines.append(f'"{field_name}": <true|false|null>,')
             else:
                 lines.append(f'"{field_name}": "<string or null if not found>",')
-            # score + explanation (dynamic scoring based on instruction)
-            lines.append(f'"{field_name}_score": "<score value only - do NOT add /5, or null if unseen/not applicable>",')
-            lines.append(f'"{field_name}_explanation": "<short rationale tied to resume evidence, or null if not applicable>",')
+            # score + explanation (MANDATORY - never null)
+            lines.append(f'"{field_name}_score": "<REQUIRED: score value based on instruction - use Met/Not Met/Recommended/Not Recommended if no format specified>",')
+            lines.append(f'"{field_name}_explanation": "<REQUIRED: short rationale tied to resume evidence>",')
     
         # Model provides overall score - no recomputing
         lines.append('"overall_score": "<score value only - do NOT add /5>",')
@@ -1001,14 +1001,16 @@ EVALUATION RULES (follow ALL):
    - The definition above specifies HOW to score this field
    - Use EXACTLY the scoring system described in the definition
    - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
-4) For EACH custom field, extract value AND provide score according to its instruction AND explanation
+4) CRITICAL - For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
+   - NEVER leave any custom field score empty or null
    - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
-   - Use EXACTLY the scoring system specified in that field's instruction
-   - Output ONLY the score value - NEVER add "/5", "out of 5", "/3", or any suffix
-   - If no specific scoring is mentioned, provide a qualitative assessment
-   - MANDATORY: If the instruction says "give them 10", "set score to X", "rate as Y", you MUST assign that exact score
+   - If the instruction says "if X then recommended" → score should be "Recommended" or "Not Recommended"
+   - If the instruction mentions a condition → evaluate it and set score to reflect the outcome
+   - If no specific scoring format is given, use: "Met", "Not Met", "Partially Met", or "N/A"
+   - MANDATORY: Every custom field MUST have a non-null score value
 5) If instruction sets threshold/condition (e.g., "if X then score=10"), YOU MUST evaluate the condition and set the score accordingly
    - Example: "if no volunteering, give 10" → Check resume for volunteering → If absent, set score to 10
+   - Example: "if they have research publication, they are recommended" → Check resume → Set score to "Recommended" or "Not Recommended"
    - Document this logic in custom_considerations with applied=true and explain the impact
 6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
    - Use the same scoring system as defined for overall evaluation
@@ -1022,7 +1024,10 @@ EVALUATION RULES (follow ALL):
 11) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
 12) Return ONLY the JSON object
 
-FINAL REMINDER: Check every score field before outputting - if you see "/5" or "/3" anywhere, REMOVE IT. Output only: 1, 2, 3, Poor, Medium, High, Red, etc."""
+FINAL REMINDER: 
+- Check every score field before outputting - if you see "/5" or "/3" anywhere, REMOVE IT
+- EVERY custom field MUST have a score value (never null or empty)
+- Output only: 1, 2, 3, Poor, Medium, High, Red, Met, Not Met, Recommended, Not Recommended, etc."""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
