@@ -8,14 +8,58 @@ from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+# ---------- LLM-based field extraction for anonymization ----------
+def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, str]:
+    """Use LLM to extract specific fields from resume text for anonymization."""
+    if not text or not fields:
+        return {}
+    
+    fields_str = ", ".join(fields)
+    prompt = f"""Extract these fields from the resume text. Return ONLY a JSON object with the field names as keys and their exact values as found in the text.
+
+Fields to extract: {fields_str}
+
+Resume text:
+{text[:2000]}
+
+Rules:
+- Return exact text as it appears in the resume
+- If a field is not found, use null
+- For "name", extract the person's full name
+- For "address", extract the complete address/location info (city, state, street, etc.)
+- For "email", extract the email address
+- For "phone", extract the phone number
+- For "gender", extract any gender/pronoun information
+- For "linkedin", extract the LinkedIn URL
+- For "github", extract the GitHub URL
+- Return ONLY valid JSON, no markdown or explanation
+
+Example output format:
+{{"name": "John Doe", "address": "123 Main St, City, State", "email": "john@email.com", "phone": "123-456-7890"}}"""
+
+    try:
+        result = call_mistral(prompt)
+        
+        if isinstance(result, dict) and "choices" in result:
+            content = result["choices"][0]["message"]["content"]
+            # Extract JSON from response
+            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+    except Exception as e:
+        # Log error but don't crash - anonymization will just be skipped
+        print(f"LLM extraction failed: {e}")
+    return {}
  
-# ---------- Anonymization helper ----------
+# ---------- Anonymization helper (LLM-based) ----------
 def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
-    """Redact user-selected categories from free text to reduce bias.
-    Supported categories (case-insensitive):
-    - name, email, phone, address, gender, age, date_of_birth/dob,
-      nationality, marital_status, linkedin, github, pronouns
-    Unknown categories: lines containing the term will be removed.
+    """Redact user-selected categories from free text using LLM-based extraction.
+    
+    Uses the LLM to dynamically identify personal information fields
+    regardless of format, then replaces them with redaction markers.
+    
+    Supported categories: name, email, phone, address, gender, linkedin, github
     """
     if not text or not fields:
         return text
@@ -23,95 +67,51 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     s = text
     cats = {f.strip().lower() for f in fields if isinstance(f, str) and f.strip()}
 
-    # Helper to check if any field contains a keyword
-    def has_keyword(keyword):
-        return any(keyword in cat for cat in cats)
-
-    # Email
-    if any(c in cats for c in ["email", "e-mail"]) or has_keyword("email"):
-        s = re.sub(r"[\w.\-+]+@[\w\-]+(?:\.[\w\-]+)+", "[REDACTED_EMAIL]", s)
-
-    # Phone numbers - improved pattern to avoid matching decimal numbers like GPA
-    if any(c in cats for c in ["phone", "phone_number", "contact"]) or has_keyword("phone"):
-        # Match phone patterns: (123) 456-7890, 123-456-7890, +1 123 456 7890, etc.
-        # Requires at least one separator (space, dash, paren) to avoid matching simple decimals
-        s = re.sub(r"\b\+?\d{1,3}?[\s\-\.]?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}\b", "[REDACTED_PHONE]", s)
-        # Also match international format with + prefix
-        s = re.sub(r"\+\d{1,3}\s?\d{1,4}\s?\d{1,4}\s?\d{1,9}", "[REDACTED_PHONE]", s)
-
-    # LinkedIn / GitHub URLs
-    if any(c in cats for c in ["linkedin", "github", "portfolio", "website"]) or has_keyword("linkedin") or has_keyword("github"):
-        s = re.sub(r"https?://(www\.)?(linkedin\.com|github\.com|bit\.ly|linktr\.ee|\S+\.(io|dev|app|site))/\S+",
-                   "[REDACTED_LINK]", s, flags=re.IGNORECASE)
-
-    # Address lines
-    if "address" in cats or has_keyword("address") or has_keyword("location"):
-        # Remove explicit Address: lines
-        s = re.sub(r"(?im)^\s*(address|location|current\s*address)\s*[:\-].*$", "[REDACTED_ADDRESS]", s)
-        # Mask common street patterns
-        s = re.sub(r"\b\d{1,5}\s+\w+(?:\s\w+){0,4}\s(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.)\b[\w\s,.-]*",
-                   "[REDACTED_ADDRESS]", s, flags=re.IGNORECASE)
-        # Catch city/state/zip patterns like "Boston, MA 02101"
-        s = re.sub(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?", "[REDACTED_ADDRESS]", s)
-        # Catch city/state patterns without ZIP like "Waltham, MA" or "San Francisco, CA"
-        s = re.sub(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2}\b", "[REDACTED_ADDRESS]", s)
-
-    # Name (best-effort): extract name from original, then replace all occurrences
-    if "name" in cats or has_keyword("name"):
-        # Use extract_personal_info for smarter name detection
-        personal_info = extract_personal_info(text)
-        candidate_name = personal_info.get('name')
+    # Map categories to LLM extraction fields
+    llm_field_mapping = {
+        "name": "name",
+        "email": "email",
+        "e-mail": "email",
+        "phone": "phone",
+        "phone_number": "phone",
+        "contact": "phone",
+        "address": "address",
+        "location": "address",
+        "gender": "gender",
+        "pronouns": "gender",
+        "linkedin": "linkedin",
+        "github": "github",
+        "portfolio": "website",
+        "website": "website",
+    }
+    
+    # Collect fields to extract via LLM
+    fields_to_extract = set()
+    for cat in cats:
+        if cat in llm_field_mapping:
+            fields_to_extract.add(llm_field_mapping[cat])
+        # Also check for partial matches
+        for key, val in llm_field_mapping.items():
+            if key in cat:
+                fields_to_extract.add(val)
+    
+    # Extract fields using LLM and redact
+    if fields_to_extract:
+        extracted = extract_fields_with_llm(text, list(fields_to_extract))
         
-        # If we found a name, replace all occurrences of it in the text
-        if candidate_name and len(candidate_name) > 2:
-            # Escape special regex characters in the name
-            escaped_name = re.escape(candidate_name)
-            # Replace full name
-            s = re.sub(rf"\b{escaped_name}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
-            
-            # Also replace individual name parts (first/last name alone)
-            name_parts = candidate_name.split()
-            if len(name_parts) >= 2:
-                first_name = name_parts[0]
-                last_name = name_parts[-1]
-                # Only replace if they're reasonably long to avoid false positives
-                if len(first_name) > 2:
-                    s = re.sub(rf"\b{re.escape(first_name)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
-                if len(last_name) > 2:
-                    s = re.sub(rf"\b{re.escape(last_name)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
-        
-        # Also remove labeled name lines
-        s = re.sub(r"(?im)^\s*(name|full\s*name)\s*[:\-].*$", "[REDACTED_NAME]", s)
-
-    # Gender
-    if "gender" in cats or has_keyword("gender"):
-        s = re.sub(r"(?im)^\s*gender\s*[:\-].*$", "[REDACTED_GENDER]", s)
-        s = re.sub(r"\b(male|female|non\-?binary|woman|man|transgender|cisgender)\b",
-                   "[REDACTED_GENDER]", s, flags=re.IGNORECASE)
-
-    # Age / DOB
-    if any(c in cats for c in ["age", "dob", "date_of_birth"]) or has_keyword("age") or has_keyword("dob") or has_keyword("birth"):
-        s = re.sub(r"(?im)^\s*age\s*[:\-]\s*\d+\b.*$", "[REDACTED_AGE]", s)
-        s = re.sub(r"(?im)^\s*(dob|date\s*of\s*birth)\s*[:\-].*$", "[REDACTED_DOB]", s)
-        s = re.sub(r"\b\d{1,2}[\-/]\d{1,2}[\-/](\d{2,4})\b", "[REDACTED_DOB]", s)
-
-    # Nationality / Marital status / Pronouns
-    if "nationality" in cats or has_keyword("nationality"):
-        s = re.sub(r"(?im)^\s*nationality\s*[:\-].*$", "[REDACTED_NATIONALITY]", s)
-    if "marital_status" in cats or has_keyword("marital"):
-        s = re.sub(r"(?im)^\s*marital\s*status\s*[:\-].*$", "[REDACTED_MARITAL_STATUS]", s)
-    if "pronouns" in cats or has_keyword("pronoun"):
-        s = re.sub(r"(?im)^\s*pronouns\s*[:\-].*$", "[REDACTED_PRONOUNS]", s)
-
-    # Generic fallback: remove lines containing unknown terms
-    known = {"name","email","e-mail","phone","phone_number","contact","address","gender","age","dob",
-             "date_of_birth","nationality","marital_status","linkedin","github","portfolio","website","pronouns"}
-    unknown = [c for c in cats if c not in known]
-    for term in unknown:
-        try:
-            s = re.sub(rf"(?im)^.*\b{re.escape(term)}\b.*$", "[REDACTED]", s)
-        except re.error:
-            continue
+        # Redact each extracted value
+        for field, value in extracted.items():
+            if value and len(str(value)) > 2:
+                escaped_val = re.escape(str(value))
+                redact_label = f"[REDACTED_{field.upper()}]"
+                s = re.sub(rf"{escaped_val}", redact_label, s, flags=re.IGNORECASE)
+                
+                # For names, also redact individual parts (first/last name)
+                if field == "name":
+                    name_parts = str(value).split()
+                    for part in name_parts:
+                        if len(part) > 2:
+                            s = re.sub(rf"\b{re.escape(part)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
 
     return s
 
