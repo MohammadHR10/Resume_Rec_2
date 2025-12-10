@@ -1355,7 +1355,31 @@ FINAL REMINDER:
         s = re.sub(r':\s*True\b', ': true', s)
         s = re.sub(r':\s*False\b', ': false', s)
         
-        # Step 6: Clean up spacing around structural elements
+        # Step 6: Fix unquoted string values (common LLM mistake)
+        # Match patterns like: "key": UnquotedValue, or "key": UnquotedValue}
+        # Common unquoted values: High, Medium, Low, Consider, Pass, Recommended, Not Met, Met, N/A, etc.
+        unquoted_patterns = [
+            (r':\s*High\s*([,}])', r': "High"\1'),
+            (r':\s*Medium\s*([,}])', r': "Medium"\1'),
+            (r':\s*Low\s*([,}])', r': "Low"\1'),
+            (r':\s*Consider\s*([,}])', r': "Consider"\1'),
+            (r':\s*Pass\s*([,}])', r': "Pass"\1'),
+            (r':\s*Recommended\s*([,}])', r': "Recommended"\1'),
+            (r':\s*Not Recommended\s*([,}])', r': "Not Recommended"\1'),
+            (r':\s*Not Met\s*([,}])', r': "Not Met"\1'),
+            (r':\s*Met\s*([,}])', r': "Met"\1'),
+            (r':\s*Partially Met\s*([,}])', r': "Partially Met"\1'),
+            (r':\s*N/A\s*([,}])', r': "N/A"\1'),
+            (r':\s*None\s*([,}])', r': null\1'),
+            (r':\s*Strong\s*([,}])', r': "Strong"\1'),
+            (r':\s*Weak\s*([,}])', r': "Weak"\1'),
+            (r':\s*Yes\s*([,}])', r': "Yes"\1'),
+            (r':\s*No\s*([,}])', r': "No"\1'),
+        ]
+        for pattern, replacement in unquoted_patterns:
+            s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+        
+        # Step 7: Clean up spacing around structural elements
         s = re.sub(r'\s*,\s*', ', ', s)  # Normalize comma spacing
         s = re.sub(r'\s*:\s*', ': ', s)  # Normalize colon spacing
         
