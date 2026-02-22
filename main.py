@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
-from app import Evaluation, build_eval_prompt
+from shared import Evaluation, build_eval_prompt
 import json
 import re
 
