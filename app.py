@@ -52,6 +52,64 @@ Example output format:
         print(f"LLM extraction failed: {e}")
     return {}
  
+# ---------- Case-insensitive string replacement (no regex) ----------
+def case_insensitive_replace(text: str, old: str, new: str) -> str:
+    """Replace all occurrences of 'old' with 'new', case-insensitively.
+    
+    Uses simple string matching instead of regex for predictable behavior.
+    """
+    if not old or len(old) < 2:
+        return text
+    
+    result = []
+    text_lower = text.lower()
+    old_lower = old.lower()
+    i = 0
+    
+    while i < len(text):
+        if text_lower[i:i+len(old_lower)] == old_lower:
+            result.append(new)
+            i += len(old)
+        else:
+            result.append(text[i])
+            i += 1
+    
+    return ''.join(result)
+
+
+def case_insensitive_replace_word(text: str, word: str, replacement: str) -> str:
+    """Replace word with replacement, case-insensitively, only at word boundaries.
+    
+    A word boundary is defined as: start/end of string, or non-alphanumeric character.
+    """
+    if not word or len(word) < 2:
+        return text
+    
+    result = []
+    text_lower = text.lower()
+    word_lower = word.lower()
+    i = 0
+    
+    while i < len(text):
+        # Check if we have a match at this position
+        if text_lower[i:i+len(word_lower)] == word_lower:
+            # Check word boundary before
+            before_ok = (i == 0) or (not text[i-1].isalnum())
+            # Check word boundary after
+            end_pos = i + len(word)
+            after_ok = (end_pos >= len(text)) or (not text[end_pos].isalnum())
+            
+            if before_ok and after_ok:
+                result.append(replacement)
+                i += len(word)
+                continue
+        
+        result.append(text[i])
+        i += 1
+    
+    return ''.join(result)
+
+
 # ---------- Anonymization helper (LLM-based) ----------
 def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     """Redact user-selected categories from free text using LLM-based extraction.
@@ -99,19 +157,18 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     if fields_to_extract:
         extracted = extract_fields_with_llm(text, list(fields_to_extract))
         
-        # Redact each extracted value
+        # Redact each extracted value using case-insensitive string matching
         for field, value in extracted.items():
             if value and len(str(value)) > 2:
-                escaped_val = re.escape(str(value))
                 redact_label = f"[REDACTED_{field.upper()}]"
-                s = re.sub(rf"{escaped_val}", redact_label, s, flags=re.IGNORECASE)
+                s = case_insensitive_replace(s, str(value), redact_label)
                 
-                # For names, also redact individual parts (first/last name)
+                # For names, also redact individual parts (first/last name) at word boundaries
                 if field == "name":
                     name_parts = str(value).split()
                     for part in name_parts:
                         if len(part) > 2:
-                            s = re.sub(rf"\b{re.escape(part)}\b", "[REDACTED_NAME]", s, flags=re.IGNORECASE)
+                            s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
 
     return s
 
