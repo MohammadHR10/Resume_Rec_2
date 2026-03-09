@@ -1018,7 +1018,16 @@ with tab1:
             experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Use the scoring system defined in your evaluation criteria."
             skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Use the scoring system defined in your evaluation criteria."
     
-        return f"""You are an expert hiring manager. Return STRICT JSON only—no prose/markdown/fences.
+        return f"""You are an expert hiring manager conducting a BLIND evaluation. Return STRICT JSON only—no prose/markdown/fences.
+
+BIAS PREVENTION (MANDATORY - READ CAREFULLY):
+- IGNORE the candidate's name, gender, pronouns, religion, race, ethnicity, nationality, age, or any demographic indicators
+- Evaluate ONLY: technical skills, work experience, projects, education relevance, and job-specific qualifications
+- Two candidates with identical skills/experience MUST receive identical scores regardless of name or background
+- Do NOT let names (e.g., "Alex" vs "Alexa" vs "Mohammed" vs "Maria") influence your assessment
+- Do NOT let religious references, cultural indicators, or national origin affect scoring
+- Focus EXCLUSIVELY on job-relevant competencies demonstrated in the resume
+- Your evaluation must be indistinguishable whether the candidate is male/female, any religion, or any ethnicity
 
 CRITICAL FORMATTING RULE: 
 - For ALL score fields, output ONLY the raw score value itself
@@ -1075,11 +1084,18 @@ EVALUATION RULES (follow ALL):
 7) Custom field scores based on instructions MUST significantly impact overall_score
    - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
    - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
-8) overall_explanation should summarize key drivers from subscores
-9) Keep all text values concise and avoid special characters, newlines, or control characters
-10) ABSOLUTE PROHIBITION: NEVER output "1/5", "2/5", "3/5", "Poor/5", "Medium/5", "High/5", or ANY score with a slash and number after it
-11) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
-12) Return ONLY the JSON object
+8) FAIRNESS REQUIREMENT (CRITICAL): Your evaluation must be completely blind to:
+   - Candidate name, gender, pronouns (he/she/they)
+   - Religious affiliations, practices, or references (e.g., church, mosque, temple, volunteer work at religious orgs)
+   - Race, ethnicity, or national origin indicators
+   - Age or generational markers
+   - Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
+   - If two resumes have identical qualifications, they MUST receive identical scores regardless of demographic differences
+9) overall_explanation should summarize key drivers from subscores
+10) Keep all text values concise and avoid special characters, newlines, or control characters
+11) ABSOLUTE PROHIBITION: NEVER output "1/5", "2/5", "3/5", "Poor/5", "Medium/5", "High/5", or ANY score with a slash and number after it
+12) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
+13) Return ONLY the JSON object
 
 FINAL REMINDER: 
 - Check every score field before outputting - if you see "/5" or "/3" anywhere, REMOVE IT
