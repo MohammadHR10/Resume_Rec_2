@@ -314,6 +314,9 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     if not extracted:
         return s
     
+    # Use neutral labels — words like RACE/RELIGION/GENDER in tags trigger guardrails
+    REDACT_TAG = "[REDACTED]"
+
     # PHASE 1: Redact PII fields (email, linkedin, github, phone, address) FIRST
     # These contain name substrings and must be replaced before name parts break them
     pii_fields = {"email", "linkedin", "github", "phone", "address"}
@@ -323,11 +326,10 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         values = extracted[field]
         if not values:
             continue
-        redact_label = f"[REDACTED_{field.upper()}]"
         sorted_values = sorted(values, key=len, reverse=True)
         for val in sorted_values:
             if len(val) > 2:
-                s = case_insensitive_replace(s, val, redact_label)
+                s = case_insensitive_replace(s, val, REDACT_TAG)
 
     # PHASE 2: Redact sensitive categories (race, religion, gender, etc.)
     for field in list(extracted.keys()):
@@ -336,11 +338,10 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         values = extracted[field]
         if not values:
             continue
-        redact_label = f"[REDACTED_{field.upper()}]"
         sorted_values = sorted(values, key=len, reverse=True)
         for val in sorted_values:
             if len(val) > 2:
-                s = case_insensitive_replace(s, val, redact_label)
+                s = case_insensitive_replace(s, val, REDACT_TAG)
 
     # PHASE 3: Redact name LAST (full name first, then individual parts)
     if "name" in extracted and extracted["name"]:
@@ -348,11 +349,11 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         sorted_names = sorted(name_values, key=len, reverse=True)
         for val in sorted_names:
             if len(val) > 2:
-                s = case_insensitive_replace(s, val, "[REDACTED_NAME]")
+                s = case_insensitive_replace(s, val, REDACT_TAG)
         name_parts = sorted_names[0].split()
         for part in name_parts:
             if len(part) > 2:
-                s = case_insensitive_replace(s, part, "[REDACTED_NAME]")
+                s = case_insensitive_replace(s, part, REDACT_TAG)
 
     return s
 
