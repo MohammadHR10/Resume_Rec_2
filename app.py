@@ -289,6 +289,14 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     if not cats:
         return text
 
+    # When "name" is active, auto-include email/linkedin/github/phone
+    # since those fields embed the person's name and leak identity
+    auto_pii = {"email", "linkedin", "github", "phone"}
+    if "name" in cats:
+        for pii in auto_pii:
+            if pii not in cats:
+                cats.append(pii)
+
     # Extract all fields locally (no LLM)
     extracted = extract_fields_locally(text, cats)
     
@@ -303,19 +311,20 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
         redact_label = f"[REDACTED_{field.upper()}]"
         
         # Sort by length descending so longer matches are replaced first
-        # e.g., "National Society of Black Engineers" before "Black"
         sorted_values = sorted(values, key=len, reverse=True)
         
         for val in sorted_values:
             if len(val) > 2:
                 s = case_insensitive_replace(s, val, redact_label)
         
-        # For names, also redact individual parts (first/last name) at word boundaries
+        # For names, also redact individual parts at word boundaries
+        # AND do non-boundary replace to catch concatenated names in URLs
         if field == "name" and sorted_values:
             name_parts = sorted_values[0].split()
             for part in name_parts:
                 if len(part) > 2:
                     s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
+                    s = case_insensitive_replace(s, part, "[REDACTED_NAME]")
 
     # Strip synthetic bias-group test codes (e.g. "– BG3/G3", "– BE1_G1", "(BE1_R1)")
     s = strip_bias_codes(s)
@@ -1333,14 +1342,11 @@ with tab1:
     
         return f"""You are an expert hiring manager conducting a BLIND evaluation. Return STRICT JSON only—no prose/markdown/fences.
 
-BIAS PREVENTION (MANDATORY - READ CAREFULLY):
-- IGNORE the candidate's name, gender, pronouns, religion, race, ethnicity, nationality, age, or any demographic indicators
+EVALUATION FOCUS:
 - Evaluate ONLY: technical skills, work experience, projects, education relevance, and job-specific qualifications
-- Two candidates with identical skills/experience MUST receive identical scores regardless of name or background
-- Do NOT let names (e.g., "Alex" vs "Alexa" vs "Mohammed" vs "Maria") influence your assessment
-- Do NOT let religious references, cultural indicators, or national origin affect scoring
+- Two candidates with identical skills and experience MUST receive identical scores
 - Focus EXCLUSIVELY on job-relevant competencies demonstrated in the resume
-- Your evaluation must be indistinguishable whether the candidate is male/female, any religion, or any ethnicity
+- Ignore any non-job-relevant personal details
 
 CRITICAL FORMATTING RULE: 
 - For ALL score fields, output ONLY the raw score value itself
@@ -1397,13 +1403,7 @@ EVALUATION RULES (follow ALL):
 7) Custom field scores based on instructions MUST significantly impact overall_score
    - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
    - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
-8) FAIRNESS REQUIREMENT (CRITICAL): Your evaluation must be completely blind to:
-   - Candidate name, gender, pronouns (he/she/they)
-   - Religious affiliations, practices, or references (e.g., church, mosque, temple, volunteer work at religious orgs)
-   - Race, ethnicity, or national origin indicators
-   - Age or generational markers
-   - Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
-   - If two resumes have identical qualifications, they MUST receive identical scores regardless of demographic differences
+8) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
 9) overall_explanation should summarize key drivers from subscores
 10) Keep all text values concise and avoid special characters, newlines, or control characters
 11) ABSOLUTE PROHIBITION: NEVER output "1/5", "2/5", "3/5", "Poor/5", "Medium/5", "High/5", or ANY score with a slash and number after it
