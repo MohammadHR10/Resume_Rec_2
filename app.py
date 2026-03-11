@@ -11,42 +11,59 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ---------- LLM-based field extraction for anonymization ----------
 def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, str]:
-    """Use LLM to extract specific fields from resume text for anonymization."""
+    """Use LLM to dynamically extract ANY user-specified fields from resume text for anonymization.
+    
+    Accepts any category the user types in - the LLM interprets it dynamically.
+    """
     if not text or not fields:
         return {}
     
     fields_str = ", ".join(fields)
-    prompt = f"""Extract these fields from the resume text. Return ONLY a JSON object with the field names as keys and their exact values as found in the text.
+    prompt = f"""You are an expert at identifying personal and sensitive information in resumes.
 
-Fields to extract: {fields_str}
+Extract the following categories from the resume text. Return ONLY a JSON object with the category names as keys and their exact values as found in the text.
+
+Categories to extract: {fields_str}
 
 Resume text:
-{text[:2000]}
+{text[:3000]}
 
 Rules:
-- Return exact text as it appears in the resume
-- If a field is not found, use null
-- For "name", extract the person's full name
-- For "address", extract the complete address/location info (city, state, street, etc.)
-- For "email", extract the email address
-- For "phone", extract the phone number
-- For "gender", extract any gender/pronoun information
-- For "linkedin", extract the LinkedIn URL
-- For "github", extract the GitHub URL
+- Return the EXACT text as it appears in the resume so it can be found and redacted
+- If a category is not found in the resume, use null
+- For categories that may have MULTIPLE occurrences, return a JSON array of ALL matching strings
+- For single-value categories (like name, email), return a single string
+- Think broadly about what each category means:
+  * "name" → the person's full name
+  * "email" → email address
+  * "phone" → phone number(s)
+  * "address" or "location" → any geographic/address info (city, state, street, ZIP, etc.)
+  * "gender" → pronouns (he/him, she/her, they/them), parental status (mother of 2, father of 3), gendered titles (Mr., Mrs., Ms.), gendered organizations. Return as array.
+  * "race" or "ethnicity" → memberships in race-affiliated organizations (NAACP, NSBE, LULAC, SHPE, BLM, etc.), cultural associations, ethnic identity mentions. Return as array.
+  * "religion" or "faith" → religious organizations, faith-based volunteering (church, mosque, temple), religious schools, faith references. Return as array.
+  * "age" or "dob" → date of birth, graduation year that reveals age, age mentions
+  * "nationality" → country of origin, citizenship, visa status
+  * "marital_status" → married, single, divorced, partner references
+  * "disability" → any disability or accommodation mentions
+  * "veteran" or "military" → military service, veteran status
+  * "linkedin" → LinkedIn URL
+  * "github" → GitHub URL
+  * For ANY OTHER category not listed above, use your best judgment to find text in the resume that relates to that category. Extract the exact text that reveals information about that category.
 - Return ONLY valid JSON, no markdown or explanation
 
 Example output format:
-{{"name": "John Doe", "address": "123 Main St, City, State", "email": "john@email.com", "phone": "123-456-7890"}}"""
+{{"name": "John Doe", "email": "john@email.com", "gender": ["she/her", "mother of 2"], "race": ["NAACP member", "National Society of Black Engineers"], "age": "Class of 2015"}}"""
 
     try:
         result = call_mistral(prompt)
         
         if isinstance(result, dict) and "choices" in result:
             content = result["choices"][0]["message"]["content"]
-            # Extract JSON from response
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
+            # Extract JSON from response (supports nested arrays/objects)
+            start = content.find('{')
+            end = content.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                return json.loads(content[start:end+1])
     except Exception as e:
         # Log error but don't crash - anonymization will just be skipped
         print(f"LLM extraction failed: {e}")
@@ -110,65 +127,84 @@ def case_insensitive_replace_word(text: str, word: str, replacement: str) -> str
     return ''.join(result)
 
 
-# ---------- Anonymization helper (LLM-based) ----------
+# ---------- Anonymization helper (LLM-based, fully dynamic) ----------
 def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     """Redact user-selected categories from free text using LLM-based extraction.
     
-    Uses the LLM to dynamically identify personal information fields
-    regardless of format, then replaces them with redaction markers.
-    
-    Supported categories: name, email, phone, address, gender, linkedin, github
+    Passes ALL user-entered categories directly to the LLM for dynamic extraction.
+    The LLM interprets any category (name, race, religion, disability, age, etc.)
+    and finds matching text in the resume. No hardcoded category list required.
     """
     if not text or not fields:
         return text
 
     s = text
-    cats = {f.strip().lower() for f in fields if isinstance(f, str) and f.strip()}
+    cats = [f.strip().lower() for f in fields if isinstance(f, str) and f.strip()]
+    
+    if not cats:
+        return text
 
-    # Map categories to LLM extraction fields
-    llm_field_mapping = {
-        "name": "name",
-        "email": "email",
+    # Alias mapping: consolidate synonyms so the LLM gets cleaner field names
+    # If user enters "pronouns", we ask LLM for "gender" (which covers pronouns)
+    alias_mapping = {
         "e-mail": "email",
-        "phone": "phone",
         "phone_number": "phone",
         "contact": "phone",
-        "address": "address",
         "location": "address",
-        "gender": "gender",
         "pronouns": "gender",
-        "linkedin": "linkedin",
-        "github": "github",
+        "sex": "gender",
+        "racial": "race",
+        "ethnic": "race",
+        "ethnicity": "race",
+        "religious": "religion",
+        "faith": "religion",
+        "church": "religion",
+        "mosque": "religion",
+        "temple": "religion",
+        "spiritual": "religion",
         "portfolio": "website",
-        "website": "website",
+        "mother": "gender",
+        "father": "gender",
     }
-    
-    # Collect fields to extract via LLM
+
+    # Build the fields to send to LLM: resolve aliases, keep unknowns as-is
     fields_to_extract = set()
+    cat_to_field = {}
     for cat in cats:
-        if cat in llm_field_mapping:
-            fields_to_extract.add(llm_field_mapping[cat])
-        # Also check for partial matches
-        for key, val in llm_field_mapping.items():
-            if key in cat:
-                fields_to_extract.add(val)
+        resolved = alias_mapping.get(cat, cat)
+        fields_to_extract.add(resolved)
+        cat_to_field[cat] = resolved
+
+    # Pass ALL categories to the LLM (known and unknown)
+    extracted = extract_fields_with_llm(text, list(fields_to_extract))
     
-    # Extract fields using LLM and redact
-    if fields_to_extract:
-        extracted = extract_fields_with_llm(text, list(fields_to_extract))
+    if not extracted:
+        return text
+    
+    # Redact each extracted value using case-insensitive string matching
+    for field, value in extracted.items():
+        if not value:
+            continue
         
-        # Redact each extracted value using case-insensitive string matching
-        for field, value in extracted.items():
-            if value and len(str(value)) > 2:
-                redact_label = f"[REDACTED_{field.upper()}]"
-                s = case_insensitive_replace(s, str(value), redact_label)
-                
-                # For names, also redact individual parts (first/last name) at word boundaries
-                if field == "name":
-                    name_parts = str(value).split()
-                    for part in name_parts:
-                        if len(part) > 2:
-                            s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
+        redact_label = f"[REDACTED_{field.upper()}]"
+        
+        # Handle array values (race, religion, gender, etc. can return arrays)
+        values_to_redact = []
+        if isinstance(value, list):
+            values_to_redact = [str(v) for v in value if v and len(str(v)) > 2]
+        elif len(str(value)) > 2:
+            values_to_redact = [str(value)]
+        
+        for val in values_to_redact:
+            s = case_insensitive_replace(s, val, redact_label)
+        
+        # For names, also redact individual parts (first/last name) at word boundaries
+        if field == "name":
+            name_str = values_to_redact[0] if values_to_redact else str(value)
+            name_parts = name_str.split()
+            for part in name_parts:
+                if len(part) > 2:
+                    s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
 
     return s
 
@@ -458,9 +494,72 @@ def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
     return info
 
 # ---------- Helpers to detect originals for arbitrary categories ----------
+
+# Known race/ethnicity-affiliated organizations for string matching
+RACE_AFFILIATED_ORGS = [
+    "NAACP", "National Association for the Advancement of Colored People",
+    "NAACP Legal Defense and Educational Fund",
+    "Black Lives Matter", "BLM",
+    "Asian Americans Advancing Justice",
+    "Native American Rights Fund",
+    "LULAC", "League of United Latin American Citizens",
+    "NSBE", "National Society of Black Engineers",
+    "SHPE", "Society of Hispanic Professional Engineers",
+    "National Society of Hispanic Professionals",
+    "AISES", "American Indian Science and Engineering Society",
+    "SACNAS", "Society for Advancement of Chicanos/Hispanics and Native Americans in Science",
+    "AAJA", "Asian American Journalists Association",
+    "Congressional Black Caucus",
+    "Congressional Hispanic Caucus",
+    "National Urban League",
+    "United Negro College Fund", "UNCF",
+    "Hispanic Heritage Foundation",
+    "National Council of La Raza",
+    "Asian Pacific American",
+    "African American", "Black American",
+    "Hispanic American", "Latino American", "Latina American",
+    "Native American", "Indigenous American",
+    "Asian American",
+]
+
+# Known religion-affiliated keywords for string matching
+RELIGION_AFFILIATED_KEYWORDS = [
+    "church", "mosque", "temple", "synagogue", "chapel",
+    "bible study", "quran study", "torah study",
+    "christian", "muslim", "jewish", "hindu", "buddhist", "sikh",
+    "catholic", "protestant", "evangelical", "baptist", "methodist", "presbyterian",
+    "islamic", "judaism", "hinduism", "buddhism",
+    "faith-based", "faith based",
+    "ministry", "minister", "pastor", "imam", "rabbi",
+    "religious", "spiritual",
+    "salvation army", "young life", "cru", "intervarsity",
+    "hillel", "chabad",
+    "catholic charities", "habitat for humanity",
+    "missionaries", "mission trip",
+]
+
+# Known gender-related keywords for string matching
+GENDER_AFFILIATED_KEYWORDS = [
+    "he/him", "she/her", "they/them", "he/his", "she/hers",
+    "mother of", "father of", "mom of", "dad of",
+    "mr.", "mrs.", "ms.", "mx.",
+    "fraternity", "sorority",
+    "women in tech", "women in stem", "women in engineering",
+    "society of women engineers", "SWE",
+    "girls who code",
+    "women's", "men's",
+    "brotherhood", "sisterhood",
+    "maternity", "paternity",
+]
+
+
 def find_category_originals(text: str, category: str) -> List[str]:
     """Try to find original values for a user-provided category from raw text.
+    Uses string matching (not regex) for race, religion, gender categories.
     - For 'university': capture common university name patterns.
+    - For 'race'/'ethnicity': match known race-affiliated organizations.
+    - For 'religion'/'faith': match known religion-affiliated keywords.
+    - For 'gender'/'pronouns': match known gender-related keywords.
     - Otherwise: return lines containing the category word (case-insensitive).
     Returns a list of candidate strings (deduped, order preserved, limited length).
     """
@@ -470,9 +569,9 @@ def find_category_originals(text: str, category: str) -> List[str]:
     lines = [l.strip() for l in re.split(r"\r?\n", text) if l.strip()]
     out: List[str] = []
     cat = category.strip().lower()
+    text_lower = text.lower()
 
     if cat == "university":
-        # Look for common university name patterns
         uni_patterns = [
             r"(?i)\bUniversity of [A-Z][A-Za-z&.'\-]+(?: [A-Z][A-Za-z&.'\-]+)*\b.*",
             r"(?i)\b[A-Z][A-Za-z&.'\-]+(?: [A-Z][A-Za-z&.'\-]+)* University\b.*",
@@ -482,11 +581,37 @@ def find_category_originals(text: str, category: str) -> List[str]:
                 if re.search(pat, ln):
                     out.append(ln)
                     break
-    else:
-        # Generic: any line that mentions the category word
-        word_pat = re.compile(rf"(?i)\b{re.escape(cat)}\b")
+
+    elif cat in ("race", "ethnicity", "racial", "ethnic"):
+        # String-match known race-affiliated orgs/keywords against each line
         for ln in lines:
-            if word_pat.search(ln):
+            ln_lower = ln.lower()
+            for org in RACE_AFFILIATED_ORGS:
+                if org.lower() in ln_lower:
+                    out.append(ln)
+                    break
+
+    elif cat in ("religion", "religious", "faith", "church", "mosque", "temple", "spiritual"):
+        for ln in lines:
+            ln_lower = ln.lower()
+            for kw in RELIGION_AFFILIATED_KEYWORDS:
+                if kw.lower() in ln_lower:
+                    out.append(ln)
+                    break
+
+    elif cat in ("gender", "pronouns", "sex", "mother", "father"):
+        for ln in lines:
+            ln_lower = ln.lower()
+            for kw in GENDER_AFFILIATED_KEYWORDS:
+                if kw.lower() in ln_lower:
+                    out.append(ln)
+                    break
+
+    else:
+        # Generic: any line containing the category word (case-insensitive)
+        cat_lower = cat.lower()
+        for ln in lines:
+            if cat_lower in ln.lower():
                 out.append(ln)
 
     # Deduplicate while preserving order
@@ -498,7 +623,7 @@ def find_category_originals(text: str, category: str) -> List[str]:
             unique_out.append(s)
 
     # Limit overly long captures
-    return unique_out[:5]
+    return unique_out[:10]
 
 # ---------- Excel sizing helper ----------
 def adjust_sheet_dimensions(ws, header_rows: int = 1, min_width: int = 12, max_width: int = 80, padding: int = 5):
@@ -888,7 +1013,7 @@ with tab1:
 
     # ---------- Anonymize Fields (Bias Mitigation) ----------
     st.markdown("### 🛡️ Anonymize Fields (Bias Mitigation)")
-    st.caption("Add categories (e.g., name, email, phone, address, gender, age, dob, nationality, marital_status, pronouns, linkedin, github) you want redacted before AI evaluation. Use one at a time; remove to stop redacting.")
+    st.caption("Add categories (e.g., name, email, phone, address, gender, race, religion, age, dob, nationality, marital_status, pronouns, linkedin, github) you want redacted before AI evaluation. Use one at a time; remove to stop redacting.")
 
     if 'anonymize_fields' not in st.session_state:
         st.session_state.anonymize_fields = []
@@ -1644,27 +1769,33 @@ FINAL REMINDER:
                                 for cat in anonymize_list:
                                     candidates: List[str] = []
                                     
-                                    # Map custom field names to standard extraction keys
-                                    extraction_key = cat
-                                    if 'name' in cat:
-                                        extraction_key = 'name'
-                                    elif 'address' in cat or 'location' in cat:
-                                        extraction_key = 'address'
-                                    elif 'email' in cat:
-                                        extraction_key = 'email'
-                                    elif 'phone' in cat:
-                                        extraction_key = 'phone'
+                                    # Resolve alias to match what was sent to LLM
+                                    alias_mapping = {
+                                        "e-mail": "email", "phone_number": "phone", "contact": "phone",
+                                        "location": "address", "pronouns": "gender", "sex": "gender",
+                                        "racial": "race", "ethnic": "race", "ethnicity": "race",
+                                        "religious": "religion", "faith": "religion", "church": "religion",
+                                        "mosque": "religion", "temple": "religion", "spiritual": "religion",
+                                        "portfolio": "website", "mother": "gender", "father": "gender",
+                                    }
+                                    extraction_key = alias_mapping.get(cat, cat)
                                     
-                                    # 1) Use extracted values if available
+                                    # 1) Use extracted values if available (handle arrays)
                                     if extraction_key in extracted and extracted[extraction_key]:
-                                        candidates.append(str(extracted[extraction_key]))
+                                        ext_val = extracted[extraction_key]
+                                        if isinstance(ext_val, list):
+                                            for item in ext_val:
+                                                if item and len(str(item)) > 2:
+                                                    candidates.append(str(item))
+                                        else:
+                                            candidates.append(str(ext_val))
                                     # 2) Look for label-style lines: "cat: value"
                                     label_pat = rf"(?im)^\s*{re.escape(cat)}\s*[:\-]\s*(.+)$"
                                     for m in re.finditer(label_pat, original_text):
                                         val = m.group(1).strip()
                                         if val:
                                             candidates.append(val)
-                                    # 3) Use category heuristics (e.g., university) and generic line matches
+                                    # 3) Use category heuristics (e.g., university, race, religion, gender)
                                     for s in find_category_originals(original_text, cat):
                                         candidates.append(s)
 
@@ -1679,7 +1810,6 @@ FINAL REMINDER:
                                                 kept_vals.append(v)
 
                                     if kept_vals:
-                                        # If multiple, join for display; store first as representative in JSON
                                         joined = " | ".join(kept_vals)
                                         redaction_map[cat] = {"original": joined, "status": "redacted"}
                                 
