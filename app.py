@@ -1810,6 +1810,7 @@ FINAL REMINDER:
                     # Apply anonymization before prompting
                     anonymized_text = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
                     resume_text = anonymized_text
+                    print(f"ANONYMIZED first 300 chars: {resume_text[:300]}")
                     prompt = build_eval_prompt(
                         job_title, department, job_description, st.session_state.custom_fields, resume_text
                     )
