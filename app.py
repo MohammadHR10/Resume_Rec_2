@@ -127,6 +127,62 @@ def case_insensitive_replace_word(text: str, word: str, replacement: str) -> str
     return ''.join(result)
 
 
+def strip_bias_codes(text: str) -> str:
+    """Remove synthetic bias-group test codes like '– BG3/G3', '– BE1_G1', '(BE1_R1)'.
+    Uses pure string scanning, no regex.
+    """
+    dash_chars = ('\u2013', '\u2014', '-')
+    prefixes = ('BG', 'BE')
+    lines = text.split('\n')
+    cleaned = []
+
+    for line in lines:
+        new_line = line
+        for dash in dash_chars:
+            idx = new_line.find(dash)
+            while idx != -1:
+                after = new_line[idx + len(dash):].lstrip()
+                matched = False
+                for pfx in prefixes:
+                    if after.startswith(pfx) and len(after) > len(pfx) and after[len(pfx)].isdigit():
+                        end = len(pfx)
+                        while end < len(after) and (after[end].isalnum() or after[end] in ('/', '_')):
+                            end += 1
+                        start = idx
+                        while start > 0 and new_line[start - 1] == ' ':
+                            start -= 1
+                        new_line = new_line[:start] + new_line[idx + len(dash) + len(after[:end].lstrip()):]
+                        new_line = new_line.rstrip()
+                        matched = True
+                        break
+                if not matched:
+                    idx = new_line.find(dash, idx + 1)
+                else:
+                    idx = new_line.find(dash, 0)
+        # Also handle parenthesized codes like "(BE1_G1)"
+        pidx = new_line.find('(')
+        while pidx != -1:
+            inner = new_line[pidx + 1:]
+            close = inner.find(')')
+            if close != -1:
+                code = inner[:close].strip()
+                is_bias = False
+                for pfx in prefixes:
+                    if code.startswith(pfx) and len(code) > len(pfx) and code[len(pfx)].isdigit():
+                        is_bias = True
+                        break
+                if is_bias:
+                    new_line = new_line[:pidx].rstrip() + new_line[pidx + close + 2:]
+                    pidx = new_line.find('(', pidx)
+                else:
+                    pidx = new_line.find('(', pidx + 1)
+            else:
+                break
+        cleaned.append(new_line)
+
+    return '\n'.join(cleaned)
+
+
 # ---------- Local field extraction for anonymization (no LLM) ----------
 def extract_fields_locally(text: str, categories: List[str]) -> Dict[str, List[str]]:
     """Extract anonymization fields using LOCAL string matching only.
@@ -161,9 +217,15 @@ def extract_fields_locally(text: str, categories: List[str]) -> Dict[str, List[s
     # Alias mapping for sensitive categories
     sensitive_alias = {
         "pronouns": "gender", "sex": "gender", "mother": "gender", "father": "gender",
+        "gender based affiliations": "gender", "gender affiliations": "gender",
+        "gender_based_affiliations": "gender",
         "ethnicity": "race", "racial": "race", "ethnic": "race",
+        "race based affiliations": "race", "race affiliations": "race",
+        "race_based_affiliations": "race",
         "religious": "religion", "faith": "religion", "church": "religion",
         "mosque": "religion", "temple": "religion", "spiritual": "religion",
+        "religion based affiliations": "religion", "religion affiliations": "religion",
+        "religion_based_affiliations": "religion",
     }
     
     for cat in categories:
@@ -255,7 +317,289 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
                 if len(part) > 2:
                     s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
 
+    # Strip synthetic bias-group test codes (e.g. "– BG3/G3", "– BE1_G1", "(BE1_R1)")
+    s = strip_bias_codes(s)
+
     return s
+
+# ---------- String-based PII helpers (no regex) ----------
+
+def _is_email_char(c: str) -> bool:
+    return c.isalnum() or c in ('.', '-', '_', '+')
+
+def _is_domain_char(c: str) -> bool:
+    return c.isalnum() or c in ('.', '-')
+
+def _find_email(text: str) -> Optional[str]:
+    """Find first email address by scanning for '@'."""
+    idx = text.find('@')
+    while idx != -1:
+        start = idx - 1
+        while start >= 0 and _is_email_char(text[start]):
+            start -= 1
+        start += 1
+        end = idx + 1
+        while end < len(text) and _is_domain_char(text[end]):
+            end += 1
+        local = text[start:idx]
+        domain = text[idx+1:end]
+        if local and '.' in domain and len(domain) >= 3:
+            if domain[-1] == '.':
+                domain = domain[:-1]
+                end -= 1
+            return text[start:end]
+        idx = text.find('@', idx + 1)
+    return None
+
+def _find_phone(text: str) -> Optional[str]:
+    """Find first phone number by scanning for digit clusters with separators."""
+    phone_seps = set('0123456789 ().-+')
+    i = 0
+    while i < len(text):
+        if text[i] == '+' or text[i].isdigit():
+            j = i
+            digit_count = 0
+            while j < len(text) and text[j] in phone_seps:
+                if text[j].isdigit():
+                    digit_count += 1
+                j += 1
+            if digit_count >= 7 and text[j-1].isdigit():
+                return text[i:j].strip()
+        i += 1
+    return None
+
+def _find_url(text: str, domain_marker: str) -> Optional[str]:
+    """Find a URL containing the given domain marker (e.g. 'linkedin.com/')."""
+    text_lower = text.lower()
+    for marker in [f"https://www.{domain_marker}", f"http://www.{domain_marker}",
+                   f"https://{domain_marker}", f"http://{domain_marker}", domain_marker]:
+        pos = text_lower.find(marker)
+        if pos != -1:
+            start = pos
+            if marker == domain_marker and start > 0:
+                k = start - 1
+                while k >= 0 and text[k] not in (' ', '\n', '\t', '\r', '|'):
+                    k -= 1
+                start = k + 1
+            end = pos + len(marker)
+            while end < len(text) and text[end] not in (' ', '\n', '\t', '\r', '|', ',', ';'):
+                end += 1
+            url = text[start:end].rstrip('.')
+            if url:
+                return url
+    return None
+
+US_STATES_ABBR = {
+    'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+    'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+    'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+}
+
+US_STATE_NAMES = {
+    'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
+    'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
+    'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
+    'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
+    'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
+    'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
+    'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
+    'Wisconsin','Wyoming'
+}
+
+STREET_SUFFIXES = [
+    'street', 'st', 'st.', 'avenue', 'ave', 'ave.', 'road', 'rd', 'rd.',
+    'boulevard', 'blvd', 'blvd.', 'lane', 'ln', 'ln.', 'drive', 'dr', 'dr.',
+    'court', 'ct', 'ct.', 'way', 'circle', 'cir', 'cir.', 'place', 'pl', 'pl.'
+]
+
+def _split_by_separators(line: str) -> List[str]:
+    """Split a line by |, \u2013, \u2014 separators."""
+    parts = []
+    current = []
+    for ch in line:
+        if ch in ('|', '\u2013', '\u2014'):
+            parts.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    parts.append(''.join(current).strip())
+    return parts
+
+def _looks_like_city_state(s: str) -> Optional[str]:
+    """Check if string looks like 'City, State' or 'City, ST' or 'City, ST ZIP'. Returns the match or None."""
+    s = s.strip()
+    comma_idx = s.find(',')
+    if comma_idx < 1:
+        return None
+    city = s[:comma_idx].strip()
+    rest = s[comma_idx+1:].strip()
+    if not city or not city[0].isupper():
+        return None
+    if not all(c.isalpha() or c.isspace() for c in city):
+        return None
+    parts = rest.split()
+    if not parts:
+        return None
+    state_candidate = parts[0]
+    if state_candidate in US_STATES_ABBR or state_candidate in US_STATE_NAMES:
+        return s
+    if len(parts) >= 2:
+        two_word = parts[0] + ' ' + parts[1]
+        if two_word in US_STATE_NAMES:
+            return s
+    return None
+
+def _has_street_suffix(line: str) -> bool:
+    """Check if a line contains a street address suffix."""
+    words = line.lower().split()
+    return any(w in STREET_SUFFIXES for w in words)
+
+def _find_address(lines: List[str], full_text: str) -> Optional[str]:
+    """Find address using string matching with priority order."""
+    addr_labels = ['address', 'location', 'current address', 'residence']
+    
+    # Priority 1: Explicit labeled address (e.g., "Address: 123 Main St")
+    for line in lines:
+        line_lower = line.lower().strip()
+        for label in addr_labels:
+            if line_lower.startswith(label):
+                rest = line[len(label):].lstrip()
+                if rest and rest[0] in (':', '-', '\u2013'):
+                    value = rest[1:].strip()
+                    if value:
+                        pipe_idx = value.find('|')
+                        if pipe_idx != -1 and '@' in value[pipe_idx:]:
+                            value = value[:pipe_idx].strip()
+                        return value
+    
+    # Priority 2: Header lines with pipes/dashes containing "City, State"
+    for line in lines[:5]:
+        if '|' in line or '\u2013' in line or '\u2014' in line:
+            parts = _split_by_separators(line)
+            for part in parts[1:]:
+                result = _looks_like_city_state(part)
+                if result:
+                    return result
+    
+    # Priority 3: Standalone "City, State" line in first 5 lines
+    for line in lines[:5]:
+        if '|' not in line and '@' not in line and 'http' not in line.lower():
+            result = _looks_like_city_state(line)
+            if result:
+                return result
+    
+    # Priority 4: Street address in first 10 lines
+    for line in lines[:10]:
+        if _has_street_suffix(line) and len(line) > 5:
+            words = line.split()
+            if words and (words[0][0].isdigit()):
+                return line
+    
+    # Priority 5: "City, ST ZIP" or "City, ST" anywhere in text
+    for line in lines:
+        result = _looks_like_city_state(line.strip())
+        if result:
+            return result
+        if '|' in line:
+            for part in _split_by_separators(line):
+                result = _looks_like_city_state(part)
+                if result:
+                    return result
+    
+    return None
+
+def _find_labeled_field(lines: List[str], labels: List[str]) -> Optional[str]:
+    """Find a labeled field like 'Pronouns: he/him' or 'Nationality: American'."""
+    for line in lines:
+        line_lower = line.lower().strip()
+        for label in labels:
+            if line_lower.startswith(label):
+                rest = line[len(label):].lstrip()
+                if rest and rest[0] in (':', '-', '\u2013'):
+                    value = rest[1:].strip()
+                    if value:
+                        return value
+    return None
+
+def _is_capitalized_word(w: str) -> bool:
+    """Check if a word starts with uppercase and rest is lowercase alpha."""
+    if len(w) < 2:
+        return False
+    return w[0].isupper() and all(c.isalpha() for c in w)
+
+def _is_name_candidate(s: str) -> bool:
+    """Check if string looks like 'FirstName LastName' (2-4 capitalized words)."""
+    words = s.split()
+    if not (2 <= len(words) <= 4):
+        return False
+    if not (5 <= len(s) <= 50):
+        return False
+    return all(_is_capitalized_word(w) for w in words)
+
+SECTION_HEADERS = {
+    'resume', 'curriculum vitae', 'cv', 'summary', 'objective', 'profile',
+    'experience', 'education', 'skills', 'projects', 'certifications',
+    'references', 'contact', 'professional summary', 'work experience',
+    'technical skills', 'qualifications', 'achievements', 'publications'
+}
+
+NOISE_WORDS = {
+    'cisco', 'hp', 'ibm', 'microsoft', 'google', 'apple', 'amazon',
+    'oracle', 'dell', 'intel', 'vmware', 'aws', 'azure', 'linux'
+}
+
+def _find_name(lines: List[str]) -> Optional[str]:
+    """Find candidate name from first 10 lines using string heuristics."""
+    # First: check for explicit "Name:" or "Full Name:" label
+    for line in lines[:10]:
+        line_lower = line.lower().strip()
+        for label in ['full name', 'name']:
+            if line_lower.startswith(label):
+                rest = line[len(label):].lstrip()
+                if rest and rest[0] in (':', '-', '\u2013'):
+                    value = rest[1:].strip()
+                    cleaned = ' '.join(value.split())
+                    if 2 <= len(cleaned) <= 80:
+                        return cleaned
+
+    for l in lines[:10]:
+        l_lower = l.lower().strip()
+
+        if l_lower in SECTION_HEADERS or l_lower in NOISE_WORDS:
+            continue
+        if '@' in l or 'http' in l_lower or 'www.' in l_lower:
+            continue
+
+        digit_count = sum(1 for c in l if c.isdigit())
+        if digit_count > 3:
+            continue
+
+        # Split by separators (|, \u2013, \u2014, " - ")
+        if '|' in l or '\u2013' in l or '\u2014' in l or ' - ' in l:
+            parts = _split_by_separators(l)
+            if ' - ' in l and len(parts) == 1:
+                idx = l.find(' - ')
+                parts = [l[:idx].strip(), l[idx+3:].strip()]
+            candidate = parts[0].strip()
+            if _is_name_candidate(candidate):
+                return candidate
+
+        if _is_name_candidate(l):
+            words = l.split()
+            if not any(w.lower() in SECTION_HEADERS for w in words):
+                return l
+
+        # Fallback: 2-4 words, mostly alphabetic
+        words = l.split()
+        if 2 <= len(words) <= 4 and 5 <= len(l) <= 50:
+            letter_count = sum(1 for c in l if c.isalpha() or c.isspace())
+            if letter_count / len(l) >= 0.8:
+                if words[0][0].isupper():
+                    if l_lower not in SECTION_HEADERS:
+                        return l
+
+    return None
+
 
 # ---------- Personal info extraction (best-effort) ----------
 def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
@@ -278,267 +622,36 @@ def extract_personal_info(text: str) -> Dict[str, Optional[str]]:
     if not text:
         return info
 
-    # Normalize newlines
-    lines = [l.strip() for l in re.split(r"\r?\n", text) if l.strip()]
+    normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = [l.strip() for l in normalized.split('\n') if l.strip()]
     head = " ".join(lines[:5]) if lines else ""
 
-    # Email
-    m = re.search(r"[\w.\-+]+@[\w\-]+(?:\.[\w\-]+)+", text)
-    if m:
-        info["email"] = m.group(0)
+    # --- Email: scan for '@' and walk outward ---
+    info["email"] = _find_email(text)
 
-    # Phone
-    m = re.search(r"\+?\d[\d\s().\-]{7,}\d", text)
-    if m:
-        info["phone"] = m.group(0)
+    # --- Phone: find digit clusters with separators ---
+    info["phone"] = _find_phone(text)
 
-    # LinkedIn
-    m = re.search(r"https?://(?:www\.)?linkedin\.com/\S+", text, flags=re.I)
-    if m:
-        info["linkedin"] = m.group(0)
+    # --- LinkedIn ---
+    info["linkedin"] = _find_url(text, "linkedin.com/")
 
-    # GitHub
-    m = re.search(r"https?://(?:www\.)?github\.com/\S+", text, flags=re.I)
-    if m:
-        info["github"] = m.group(0)
+    # --- GitHub ---
+    info["github"] = _find_url(text, "github.com/")
 
-    # Address - improved extraction with priority order and validation
-    # Priority 1: Explicit labeled address
-    m = re.search(r"(?im)^\s*(address|location|current\s*address|residence)\s*[:\-]\s*(.+?)(?:\n|$)", text)
-    if m:
-        addr_candidate = m.group(2).strip()
-        # Clean up: remove trailing contact info that might be on same line
-        addr_candidate = re.sub(r'\s*\|\s*[\w.\-+]+@[\w\-]+\.[\w\-]+.*$', '', addr_candidate)
-        addr_candidate = re.sub(r'\s*\|\s*\+?\d[\d\s().\-]+$', '', addr_candidate)
-        # Stop at common section headers
-        addr_candidate = re.split(r'\s+(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b', addr_candidate)[0].strip()
-        if addr_candidate:
-            info["address"] = addr_candidate
-    
-    # Priority 2: Look in header (first 5 lines) for "City, State" or "City, State ZIP" patterns
-    # Common in resume headers like: "Sam Norman | Boston, Massachusetts"
-    elif lines:
-        for l in lines[:5]:
-            # Check for location after pipe or dash in header
-            if '|' in l or '–' in l or '—' in l:
-                # Split by pipe/dash and look for location in latter parts
-                parts = re.split(r'\s*[|–—]\s*', l)
-                for part in parts[1:]:  # Skip first part (usually name)
-                    # Match: "City, State" or "City, State ZIP"
-                    m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5})?$', part.strip())
-                    if m:
-                        info["address"] = part.strip()
-                        break
-                if info["address"]:
-                    break
-            # Also check if line itself is just "City, State" format (without pipes)
-            if not info["address"]:
-                m = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$', l.strip())
-                if m:
-                    # Validate state
-                    city, state_part = m.group(1), m.group(2)
-                    us_states = {
-                        'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
-                        'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
-                        'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-                    }
-                    us_state_names = {
-                        'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
-                        'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
-                        'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
-                        'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
-                        'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
-                        'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
-                        'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
-                        'Wisconsin','Wyoming','Messachussetts'  # Include common typo
-                    }
-                    if state_part in us_states or state_part in us_state_names:
-                        info["address"] = l.strip()
-                        break
-    
-    # Priority 3: Search first 10 lines for street address patterns
-    if not info["address"] and lines:
-        for l in lines[:10]:
-            # Look for street address in this line
-            m = re.search(
-                r'\d{1,5}\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?)',
-                l
-            )
-            if m:
-                # Found street address in this line
-                street = m.group(0).strip()
-                # Look for city/state after it in same line or next line
-                rest_of_line = l[m.end():].strip()
-                
-                # Try to find city, state in the rest of this line
-                city_state = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?', rest_of_line)
-                if city_state:
-                    info["address"] = f"{street}, {city_state.group(0)}"
-                    break
-                else:
-                    # Just use the street address
-                    info["address"] = street
-                    break
-    
-    # Priority 4: Full street address pattern in entire text
-    if not info["address"]:
-        # Match complete US address: street + city + state + optional ZIP
-        # More precise: stop at newline or end of line
-        m = re.search(
-            r'\d{1,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Circle|Cir\.?),?\s*' +
-            r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?',
-            text
-        )
-        if m:
-            # Extract just the matched address, clean up
-            addr = m.group(0).strip()
-            # Stop at newline or common section markers
-            addr = re.split(r'\n|(?=\b(?:Qualifications?|Skills?|Experience|Education|Summary|Objective)\b)', addr)[0].strip()
-            # Remove trailing punctuation artifacts
-            addr = re.sub(r'\s*[,;:]\s*$', '', addr)
-            if addr:
-                info["address"] = addr
-    
-    # Priority 5: City, State ZIP pattern (e.g., "Boston, MA 02101" or "San Francisco, CA 94102")
-    if not info["address"]:
-        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b', text)
-        if m:
-            city, state, zip_code = m.groups()
-            # Validate it's a real location (not random capitalized words)
-            # US states should be 2-letter abbreviations
-            us_states = {
-                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
-                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
-                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-            }
-            if state in us_states:
-                info["address"] = m.group(0).strip()
-    
-    # Priority 6: City, State pattern without ZIP (e.g., "Waltham, MA" or "Boston, Massachusetts")
-    if not info["address"]:
-        # Try 2-letter state code first
-        m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\b', text)
-        if m:
-            city, state = m.groups()
-            us_states = {
-                'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
-                'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
-                'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-            }
-            if state in us_states:
-                info["address"] = m.group(0).strip()
-        else:
-            # Try full state name (e.g., "Boston, Massachusetts")
-            m = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', text)
-            if m:
-                city, state = m.groups()
-                # Validate it looks like a US state (common ones)
-                us_state_names = {
-                    'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut',
-                    'Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa',
-                    'Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
-                    'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire',
-                    'New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio',
-                    'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
-                    'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia',
-                    'Wisconsin','Wyoming'
-                }
-                if state in us_state_names:
-                    info["address"] = m.group(0).strip()
+    # --- Address ---
+    info["address"] = _find_address(lines, text)
 
-    # Pronouns
-    m = re.search(r"(?im)^\s*pronouns\s*[:\-]\s*(.+)$", text)
-    if m:
-        info["pronouns"] = m.group(1).strip()
+    # --- Pronouns ---
+    info["pronouns"] = _find_labeled_field(lines, ["pronouns"])
 
-    # Nationality
-    m = re.search(r"(?im)^\s*nationality\s*[:\-]\s*(.+)$", text)
-    if m:
-        info["nationality"] = m.group(1).strip()
+    # --- Nationality ---
+    info["nationality"] = _find_labeled_field(lines, ["nationality"])
 
-    # Marital status
-    m = re.search(r"(?im)^\s*marital\s*status\s*[:\-]\s*(.+)$", text)
-    if m:
-        info["marital_status"] = m.group(1).strip()
+    # --- Marital status ---
+    info["marital_status"] = _find_labeled_field(lines, ["marital status"])
 
-    # Name – improved heuristics with better filtering
-    m = re.search(r"(?im)^\s*(name|full\s*name)\s*[:\-]\s*(.+)$", text)
-    if m:
-        name_val = re.sub(r"\s+", " ", m.group(2)).strip()
-        if 2 <= len(name_val) <= 80:
-            info["name"] = name_val
-    else:
-        # Common resume section headers to exclude (case-insensitive)
-        section_headers = {
-            'resume', 'curriculum vitae', 'cv', 'summary', 'objective', 'profile',
-            'experience', 'education', 'skills', 'projects', 'certifications',
-            'references', 'contact', 'professional summary', 'work experience',
-            'technical skills', 'qualifications', 'achievements', 'publications'
-        }
-        
-        # Common company/product names that aren't names
-        noise_words = {
-            'cisco', 'hp', 'ibm', 'microsoft', 'google', 'apple', 'amazon',
-            'oracle', 'dell', 'intel', 'vmware', 'aws', 'azure', 'linux'
-        }
-        
-        # Search first 10 lines for best name candidate
-        for l in lines[:10]:
-            l_lower = l.lower().strip()
-            
-            # Skip if it's a section header
-            if l_lower in section_headers:
-                continue
-            
-            # Skip if it's a noise word
-            if l_lower in noise_words:
-                continue
-            
-            # Skip if contains URL, email, or phone patterns
-            if ("@" in l) or ("http" in l_lower) or ("www." in l_lower):
-                continue
-            
-            # Skip if has too many numbers (likely not a name)
-            if len(re.findall(r'\d', l)) > 3:
-                continue
-            
-            # Check for header format: "Name | Location" or "Name - Location"
-            # Extract just the name part before pipe or dash
-            if '|' in l:
-                parts = l.split('|')
-                candidate = parts[0].strip()
-                # Validate the part before pipe looks like a name
-                if 2 <= len(candidate.split()) <= 4 and len(candidate) >= 5:
-                    # Check it's mostly letters and spaces
-                    if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', candidate):
-                        info["name"] = candidate
-                        break
-            
-            # Look for format: "FirstName LastName" at start (2-4 words, capitalized)
-            # Must start with capital letter and be 2-4 words
-            if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', l):
-                # Must be reasonable length (not too short, not too long)
-                if 5 <= len(l) <= 50:
-                    # Additional validation: should have at least first + last name
-                    words = l.split()
-                    if len(words) >= 2:
-                        # Check words aren't section headers
-                        if not any(w.lower() in section_headers for w in words):
-                            info["name"] = l
-                            break
-            
-            # Fallback: first line with 2-4 words, mostly alphabetic, proper length
-            words = l.split()
-            if 2 <= len(words) <= 4 and 5 <= len(l) <= 50:
-                # Must be mostly alphabetic (at least 80% letters)
-                letter_count = sum(c.isalpha() or c.isspace() for c in l)
-                if letter_count / len(l) >= 0.8:
-                    # Check first word is capitalized
-                    if words[0][0].isupper():
-                        # Not a section header
-                        if l_lower not in section_headers:
-                            info["name"] = l
-                            break
+    # --- Name ---
+    info["name"] = _find_name(lines)
 
     return info
 
@@ -643,19 +756,17 @@ def find_category_originals(text: str, category: str) -> List[str]:
     if not text or not category:
         return []
 
-    lines = [l.strip() for l in re.split(r"\r?\n", text) if l.strip()]
+    lines = [l.strip() for l in text.replace('\r\n', '\n').replace('\r', '\n').split('\n') if l.strip()]
     out: List[str] = []
     cat = category.strip().lower()
     text_lower = text.lower()
 
     if cat == "university":
-        uni_patterns = [
-            r"(?i)\bUniversity of [A-Z][A-Za-z&.'\-]+(?: [A-Z][A-Za-z&.'\-]+)*\b.*",
-            r"(?i)\b[A-Z][A-Za-z&.'\-]+(?: [A-Z][A-Za-z&.'\-]+)* University\b.*",
-        ]
+        uni_markers = ["university of ", " university"]
         for ln in lines:
-            for pat in uni_patterns:
-                if re.search(pat, ln):
+            ln_lower = ln.lower()
+            for marker in uni_markers:
+                if marker in ln_lower:
                     out.append(ln)
                     break
 
