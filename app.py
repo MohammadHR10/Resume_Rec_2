@@ -314,8 +314,7 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     if not extracted:
         return s
     
-    # Use neutral labels — words like RACE/RELIGION/GENDER in tags trigger guardrails
-    REDACT_TAG = "[REDACTED]"
+    REDACT_TAG = "***"
 
     # PHASE 1: Redact PII fields (email, linkedin, github, phone, address) FIRST
     # These contain name substrings and must be replaced before name parts break them
@@ -1369,13 +1368,11 @@ with tab1:
             experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Use the scoring system defined in your evaluation criteria."
             skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Use the scoring system defined in your evaluation criteria."
     
-        return f"""You are an expert hiring manager conducting a BLIND evaluation. Return STRICT JSON only—no prose/markdown/fences.
+        return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
 
 EVALUATION FOCUS:
-- Evaluate ONLY: technical skills, work experience, projects, education relevance, and job-specific qualifications
-- Two candidates with identical skills and experience MUST receive identical scores
-- Focus EXCLUSIVELY on job-relevant competencies demonstrated in the resume
-- Ignore any non-job-relevant personal details
+- Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
+- Focus on job-relevant competencies demonstrated in the resume
 
 CRITICAL FORMATTING RULE: 
 - For ALL score fields, output ONLY the raw score value itself
