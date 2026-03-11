@@ -141,7 +141,9 @@ def strip_bias_codes(text: str) -> str:
         for dash in dash_chars:
             idx = new_line.find(dash)
             while idx != -1:
-                after = new_line[idx + len(dash):].lstrip()
+                raw_after = new_line[idx + len(dash):]
+                stripped_spaces = len(raw_after) - len(raw_after.lstrip())
+                after = raw_after.lstrip()
                 matched = False
                 for pfx in prefixes:
                     if after.startswith(pfx) and len(after) > len(pfx) and after[len(pfx)].isdigit():
@@ -151,7 +153,8 @@ def strip_bias_codes(text: str) -> str:
                         start = idx
                         while start > 0 and new_line[start - 1] == ' ':
                             start -= 1
-                        new_line = new_line[:start] + new_line[idx + len(dash) + len(after[:end].lstrip()):]
+                        cut_end = idx + len(dash) + stripped_spaces + end
+                        new_line = new_line[:start] + new_line[cut_end:]
                         new_line = new_line.rstrip()
                         matched = True
                         break
@@ -297,37 +300,54 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
             if pii not in cats:
                 cats.append(pii)
 
+    # Strip synthetic bias-group test codes FIRST (before any matching)
+    s = strip_bias_codes(s)
+
     # Extract all fields locally (no LLM)
-    extracted = extract_fields_locally(text, cats)
+    extracted = extract_fields_locally(s, cats)
     
     if not extracted:
-        return text
+        return s
     
-    # Redact each extracted value using case-insensitive string matching
-    for field, values in extracted.items():
+    # PHASE 1: Redact PII fields (email, linkedin, github, phone, address) FIRST
+    # These contain name substrings and must be replaced before name parts break them
+    pii_fields = {"email", "linkedin", "github", "phone", "address"}
+    for field in list(extracted.keys()):
+        if field not in pii_fields:
+            continue
+        values = extracted[field]
         if not values:
             continue
-        
         redact_label = f"[REDACTED_{field.upper()}]"
-        
-        # Sort by length descending so longer matches are replaced first
         sorted_values = sorted(values, key=len, reverse=True)
-        
         for val in sorted_values:
             if len(val) > 2:
                 s = case_insensitive_replace(s, val, redact_label)
-        
-        # For names, also redact individual parts at word boundaries
-        # AND do non-boundary replace to catch concatenated names in URLs
-        if field == "name" and sorted_values:
-            name_parts = sorted_values[0].split()
-            for part in name_parts:
-                if len(part) > 2:
-                    s = case_insensitive_replace_word(s, part, "[REDACTED_NAME]")
-                    s = case_insensitive_replace(s, part, "[REDACTED_NAME]")
 
-    # Strip synthetic bias-group test codes (e.g. "– BG3/G3", "– BE1_G1", "(BE1_R1)")
-    s = strip_bias_codes(s)
+    # PHASE 2: Redact sensitive categories (race, religion, gender, etc.)
+    for field in list(extracted.keys()):
+        if field in pii_fields or field == "name":
+            continue
+        values = extracted[field]
+        if not values:
+            continue
+        redact_label = f"[REDACTED_{field.upper()}]"
+        sorted_values = sorted(values, key=len, reverse=True)
+        for val in sorted_values:
+            if len(val) > 2:
+                s = case_insensitive_replace(s, val, redact_label)
+
+    # PHASE 3: Redact name LAST (full name first, then individual parts)
+    if "name" in extracted and extracted["name"]:
+        name_values = extracted["name"]
+        sorted_names = sorted(name_values, key=len, reverse=True)
+        for val in sorted_names:
+            if len(val) > 2:
+                s = case_insensitive_replace(s, val, "[REDACTED_NAME]")
+        name_parts = sorted_names[0].split()
+        for part in name_parts:
+            if len(part) > 2:
+                s = case_insensitive_replace(s, part, "[REDACTED_NAME]")
 
     return s
 
@@ -365,14 +385,17 @@ def _find_phone(text: str) -> Optional[str]:
     phone_seps = set('0123456789 ().-+')
     i = 0
     while i < len(text):
-        if text[i] == '+' or text[i].isdigit():
+        c = text[i]
+        if c == '+' or c.isdigit() or c == '(':
             j = i
             digit_count = 0
             while j < len(text) and text[j] in phone_seps:
                 if text[j].isdigit():
                     digit_count += 1
                 j += 1
-            if digit_count >= 7 and text[j-1].isdigit():
+            while j > i and not text[j-1].isdigit():
+                j -= 1
+            if digit_count >= 7 and j > i:
                 return text[i:j].strip()
         i += 1
     return None
