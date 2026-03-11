@@ -306,6 +306,11 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> str:
     # Extract all fields locally (no LLM)
     extracted = extract_fields_locally(s, cats)
     
+    print(f"DEBUG anonymize_text: cats={cats}")
+    print(f"DEBUG anonymize_text: extracted keys={list(extracted.keys())}")
+    for k, v in extracted.items():
+        print(f"DEBUG   {k} -> {v[:3] if len(v) > 3 else v}")
+    
     if not extracted:
         return s
     
