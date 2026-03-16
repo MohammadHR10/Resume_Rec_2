@@ -12,10 +12,19 @@ MODEL = os.getenv("LLM_MODEL", "llama-3.2-90b-vision-instruct")
 # Hardcoded seed for deterministic/repeatable outputs
 SEED = 42
 
+# HiddenLayer guardrail headers — routes to the Resume Modeler project policy
+HL_PROJECT_ID = os.getenv("HL_PROJECT_ID", "")
+HL_REQUESTER_ID = os.getenv("HL_REQUESTER_ID", "resume-modeler")
+
 headers = {
     "Authorization": f"Bearer {api_key}",
     "Content-Type": "application/json"
 }
+
+if HL_PROJECT_ID:
+    headers["hl-project-id"] = HL_PROJECT_ID
+if HL_REQUESTER_ID:
+    headers["hl-requester-id"] = HL_REQUESTER_ID
 
 def call_mistral(prompt):
     """
