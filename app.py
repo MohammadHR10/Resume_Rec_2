@@ -21,9 +21,9 @@ def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, List[str]
         return {}
 
     fields_str = ", ".join(fields)
-    prompt = f"""You are a resume redaction assistant. Your job is to find text in a resume that reveals information about specific categories so it can be removed.
+    prompt = f"""You are a resume redaction assistant. Find and extract all text in a resume that matches the requested categories so it can be removed.
 
-Find ALL text that matches these categories: {fields_str}
+Categories to find: {fields_str}
 
 Resume:
 {text[:4000]}
@@ -31,28 +31,15 @@ Resume:
 Instructions:
 - Return a JSON object where each key is a category and the value is an array of exact strings from the resume
 - Copy the EXACT text as it appears so it can be found and replaced
-- Be thorough: scan the ENTIRE resume, not just the header
-- For each category, think broadly:
-  * name: full name as written
-  * email: full email address
-  * phone: full phone number including area code
-  * address/location: city, state, ZIP, street address
-  * linkedin: full LinkedIn URL
-  * github: full GitHub URL
-  * gender: pronouns (he/him, she/her, they/them), gendered titles (Mr., Mrs., Ms., Mx.), phrases like "mother of", "father of", "women in tech", "women in STEM", gendered organizations (Society of Women Engineers, Girls Who Code, fraternities, sororities)
-  * race/ethnicity: any organization, membership, or phrase tied to a racial or ethnic group (e.g. NAACP, NSBE, SHPE, LULAC, Black Lives Matter, Arab American Institute, Asian Americans Advancing Justice, Hispanic Heritage, etc.)
-  * religion/faith: any religious organization, place of worship, or faith reference (e.g. InterVarsity Christian Fellowship, church volunteer, mosque, temple, synagogue, bible study, Hillel, Muslim Student Association, etc.)
-  * age/dob: date of birth, explicit age mentions, graduation years that reveal age
-  * nationality: country of origin, citizenship, visa status
-  * marital_status: married, single, divorced, partner references
-  * disability: disability or accommodation mentions
-  * veteran/military: military service, veteran status
-  * For any other category: use best judgment to find text revealing that information
+- Be thorough: scan the entire resume from top to bottom
+- Think broadly about each category — include any text, phrase, organization name, membership, affiliation, pronoun, title, or reference that reveals information about that category
+- For contact info categories (name, email, phone, address, linkedin, github): extract the full value as written
+- For any other category: find every phrase, sentence fragment, organization name, or keyword in the resume that relates to it
 - If nothing is found for a category, use an empty array []
 - Return ONLY valid JSON, no markdown fences or explanation
 
-Example:
-{{"name": ["Jane Smith"], "email": ["jane@example.com"], "gender": ["she/her", "women in tech", "Society of Women Engineers"], "religion": ["InterVarsity Christian Fellowship"]}}"""
+Example format:
+{{"category1": ["exact text 1", "exact text 2"], "category2": ["exact text 3"]}}"""
 
     try:
         result = call_mistral(prompt)
@@ -63,7 +50,6 @@ Example:
             end = content.rfind('}')
             if start != -1 and end != -1 and end > start:
                 raw = json.loads(content[start:end + 1])
-                # Normalize: ensure every value is a list of strings
                 normalized: Dict[str, List[str]] = {}
                 for key, val in raw.items():
                     if val is None:
@@ -76,12 +62,12 @@ Example:
                         if flat:
                             normalized[key.lower()] = flat
                     else:
-                        s = str(val)
-                        if s:
-                            normalized[key.lower()] = [s]
+                        sv = str(val)
+                        if sv:
+                            normalized[key.lower()] = [sv]
                 return normalized
-    except Exception as e:
-        print(f"LLM extraction failed: {e}")
+    except Exception:
+        pass
     return {}
  
 # ---------- Case-insensitive string replacement (no regex) ----------
@@ -201,154 +187,12 @@ def strip_bias_codes(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-# ---------- Keyword lists for local fallback extraction ----------
-_RACE_KEYWORDS = sorted([
-    "NAACP", "National Association for the Advancement of Colored People",
-    "NAACP Legal Defense and Educational Fund",
-    "Black Lives Matter", "BLM",
-    "Asian Americans Advancing Justice", "Native American Rights Fund",
-    "LULAC", "League of United Latin American Citizens",
-    "NSBE", "National Society of Black Engineers",
-    "SHPE", "Society of Hispanic Professional Engineers",
-    "AISES", "American Indian Science and Engineering Society",
-    "SACNAS", "AAJA", "Asian American Journalists Association",
-    "Congressional Black Caucus", "Congressional Hispanic Caucus",
-    "National Urban League", "United Negro College Fund", "UNCF",
-    "Hispanic Heritage Foundation", "National Council of La Raza",
-    "Asian Pacific American",
-    "African American", "Black American",
-    "Hispanic American", "Latino American", "Latina American",
-    "Native American", "Indigenous American", "Asian American",
-    "Arab American Institute", "Arab American",
-    "Korean American", "Chinese American", "Japanese American",
-    "Indian American", "South Asian American", "Pacific Islander",
-    "National Association of Black Accountants",
-    "National Black MBA Association", "Thurgood Marshall College Fund",
-    "Hispanic Scholarship Fund", "MAES", "Latinos in Science and Engineering",
-], key=len, reverse=True)
-
-_RELIGION_KEYWORDS = sorted([
-    "church", "mosque", "temple", "synagogue", "chapel",
-    "bible study", "quran study", "torah study",
-    "christian", "muslim", "jewish", "hindu", "buddhist", "sikh",
-    "catholic", "protestant", "evangelical", "baptist", "methodist", "presbyterian",
-    "islamic", "judaism", "hinduism", "buddhism",
-    "faith-based", "faith based",
-    "ministry", "minister", "pastor", "imam", "rabbi",
-    "religious", "spiritual",
-    "salvation army", "young life", "cru", "intervarsity",
-    "hillel", "chabad", "catholic charities", "habitat for humanity",
-    "missionaries", "mission trip",
-    "InterVarsity Christian Fellowship",
-    "Campus Crusade", "Navigators", "Fellowship of Christian Athletes",
-    "Muslim Students Association", "MSA", "Jewish Student Union",
-    "Hindu Students Council", "Sikh Coalition",
-    "Latter-day Saints", "LDS", "Seventh-day Adventist",
-], key=len, reverse=True)
-
-_GENDER_KEYWORDS = sorted([
-    "he/him", "she/her", "they/them", "he/his", "she/hers",
-    "mother of", "father of", "mom of", "dad of",
-    "mr.", "mrs.", "ms.", "mx.",
-    "fraternity", "sorority",
-    "women in tech", "women in stem", "women in engineering",
-    "society of women engineers", "SWE", "girls who code",
-    "women's", "men's", "brotherhood", "sisterhood",
-    "maternity", "paternity",
-    "I am a woman", "I am a man", "as a woman", "as a man",
-    "female engineer", "male engineer", "women who code",
-    "Ladies in Tech", "Anita Borg Institute", "AnitaB.org", "Grace Hopper",
-], key=len, reverse=True)
-
-_SENSITIVE_ALIAS = {
-    "pronouns": "gender", "sex": "gender", "mother": "gender", "father": "gender",
-    "gender based affiliations": "gender", "gender affiliations": "gender",
-    "gender_based_affiliations": "gender",
-    "ethnicity": "race", "racial": "race", "ethnic": "race",
-    "race based affiliations": "race", "race affiliations": "race",
-    "race_based_affiliations": "race",
-    "religious": "religion", "faith": "religion", "church": "religion",
-    "mosque": "religion", "temple": "religion", "spiritual": "religion",
-    "religion based affiliations": "religion", "religion affiliations": "religion",
-    "religion_based_affiliations": "religion",
-}
-
-
-def _extract_fields_locally(text: str, categories: List[str]) -> Dict[str, List[str]]:
-    """Local keyword-based fallback when LLM extraction is unavailable."""
-    if not text or not categories:
-        return {}
-
-    results: Dict[str, List[str]] = {}
-    text_lower = text.lower()
-    personal_info = None
-
-    pii_field_map = {
-        "name": "name", "email": "email", "e-mail": "email",
-        "phone": "phone", "phone_number": "phone", "contact": "phone",
-        "address": "address", "location": "address",
-        "linkedin": "linkedin", "github": "github",
-    }
-
-    for cat in categories:
-        found: List[str] = []
-        resolved = _SENSITIVE_ALIAS.get(cat, cat)
-
-        # Also resolve long-form user categories like "race based organizations or anything race related information"
-        for alias_key, alias_val in _SENSITIVE_ALIAS.items():
-            if alias_key in cat:
-                resolved = alias_val
-                break
-        # Check for core keywords in category name
-        if "race" in cat or "ethnic" in cat:
-            resolved = "race"
-        elif "gender" in cat or "pronoun" in cat:
-            resolved = "gender"
-        elif "religio" in cat or "faith" in cat:
-            resolved = "religion"
-
-        if cat in pii_field_map or resolved in pii_field_map:
-            if personal_info is None:
-                personal_info = extract_personal_info(text)
-            pii_key = pii_field_map.get(cat) or pii_field_map.get(resolved)
-            if pii_key and personal_info.get(pii_key):
-                found.append(personal_info[pii_key])
-
-        elif resolved == "race":
-            for org in _RACE_KEYWORDS:
-                if org.lower() in text_lower:
-                    found.append(org)
-
-        elif resolved == "religion":
-            for kw in _RELIGION_KEYWORDS:
-                if kw.lower() in text_lower:
-                    found.append(kw)
-
-        elif resolved == "gender":
-            for kw in _GENDER_KEYWORDS:
-                if kw.lower() in text_lower:
-                    found.append(kw)
-
-        else:
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
-            for ln in lines:
-                if cat in ln.lower() and len(ln) > 2:
-                    found.append(ln)
-
-        if found:
-            results[resolved] = found
-
-    return results
-
-
 # ---------- Anonymization helper ----------
 def anonymize_text(text: str, fields: Optional[List[str]]) -> Tuple[str, Dict[str, List[str]]]:
-    """Anonymize resume text by extracting and redacting bias-related content.
+    """Anonymize resume text using LLM-based extraction and redaction.
 
-    Strategy: try LLM extraction first (more thorough). If it fails or returns
-    empty (e.g. blocked by guardrail), fall back to local keyword matching so
-    redaction always happens.
-
+    Pass 1 – LLM identifies all bias-related strings matching user categories.
+    Redact  – replace every found string with ***.
     Returns (anonymized_text, extracted_dict).
     """
     if not text or not fields:
@@ -370,18 +214,8 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> Tuple[str, Dict[st
     # Strip synthetic bias-group test codes first
     s = strip_bias_codes(s)
 
-    # Try LLM extraction (Pass 1)
+    # LLM extraction (Pass 1)
     extracted = extract_fields_with_llm(s, cats)
-
-    # Fallback: if LLM returned nothing, use local keyword matching
-    if not extracted:
-        print("DEBUG anonymize_text: LLM extraction empty, using LOCAL fallback")
-        extracted = _extract_fields_locally(s, cats)
-
-    print(f"DEBUG anonymize_text: cats={cats}")
-    print(f"DEBUG anonymize_text: extracted keys={list(extracted.keys())}")
-    for k, v in extracted.items():
-        print(f"DEBUG   {k} -> {v[:3] if len(v) > 3 else v}")
 
     if not extracted:
         return s, {}
@@ -1749,7 +1583,6 @@ FINAL REMINDER:
                     # Apply anonymization before prompting
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
                     resume_text = anonymized_text
-                    print(f"ANONYMIZED first 300 chars: {resume_text[:300]}")
                     prompt = build_eval_prompt(
                         job_title, department, job_description, st.session_state.custom_fields, resume_text
                     )
