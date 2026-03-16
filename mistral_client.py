@@ -16,6 +16,9 @@ SEED = 42
 HL_PROJECT_ID = os.getenv("HL_PROJECT_ID", "")
 HL_REQUESTER_ID = os.getenv("HL_REQUESTER_ID", "resume-modeler")
 
+print(f"[mistral_client] HL_PROJECT_ID loaded: {'YES (' + HL_PROJECT_ID[:8] + '...)' if HL_PROJECT_ID else 'EMPTY — headers will NOT be sent'}")
+print(f"[mistral_client] HL_REQUESTER_ID loaded: {HL_REQUESTER_ID or 'EMPTY'}")
+
 headers = {
     "Authorization": f"Bearer {api_key}",
     "Content-Type": "application/json"
@@ -25,6 +28,8 @@ if HL_PROJECT_ID:
     headers["hl-project-id"] = HL_PROJECT_ID
 if HL_REQUESTER_ID:
     headers["hl-requester-id"] = HL_REQUESTER_ID
+
+print(f"[mistral_client] Headers being sent: {[k for k in headers.keys()]}")
 
 def call_mistral(prompt):
     """

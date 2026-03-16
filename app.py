@@ -201,16 +201,155 @@ def strip_bias_codes(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-# ---------- Anonymization helper (two-pass LLM-based) ----------
+# ---------- Keyword lists for local fallback extraction ----------
+_RACE_KEYWORDS = sorted([
+    "NAACP", "National Association for the Advancement of Colored People",
+    "NAACP Legal Defense and Educational Fund",
+    "Black Lives Matter", "BLM",
+    "Asian Americans Advancing Justice", "Native American Rights Fund",
+    "LULAC", "League of United Latin American Citizens",
+    "NSBE", "National Society of Black Engineers",
+    "SHPE", "Society of Hispanic Professional Engineers",
+    "AISES", "American Indian Science and Engineering Society",
+    "SACNAS", "AAJA", "Asian American Journalists Association",
+    "Congressional Black Caucus", "Congressional Hispanic Caucus",
+    "National Urban League", "United Negro College Fund", "UNCF",
+    "Hispanic Heritage Foundation", "National Council of La Raza",
+    "Asian Pacific American",
+    "African American", "Black American",
+    "Hispanic American", "Latino American", "Latina American",
+    "Native American", "Indigenous American", "Asian American",
+    "Arab American Institute", "Arab American",
+    "Korean American", "Chinese American", "Japanese American",
+    "Indian American", "South Asian American", "Pacific Islander",
+    "National Association of Black Accountants",
+    "National Black MBA Association", "Thurgood Marshall College Fund",
+    "Hispanic Scholarship Fund", "MAES", "Latinos in Science and Engineering",
+], key=len, reverse=True)
+
+_RELIGION_KEYWORDS = sorted([
+    "church", "mosque", "temple", "synagogue", "chapel",
+    "bible study", "quran study", "torah study",
+    "christian", "muslim", "jewish", "hindu", "buddhist", "sikh",
+    "catholic", "protestant", "evangelical", "baptist", "methodist", "presbyterian",
+    "islamic", "judaism", "hinduism", "buddhism",
+    "faith-based", "faith based",
+    "ministry", "minister", "pastor", "imam", "rabbi",
+    "religious", "spiritual",
+    "salvation army", "young life", "cru", "intervarsity",
+    "hillel", "chabad", "catholic charities", "habitat for humanity",
+    "missionaries", "mission trip",
+    "InterVarsity Christian Fellowship",
+    "Campus Crusade", "Navigators", "Fellowship of Christian Athletes",
+    "Muslim Students Association", "MSA", "Jewish Student Union",
+    "Hindu Students Council", "Sikh Coalition",
+    "Latter-day Saints", "LDS", "Seventh-day Adventist",
+], key=len, reverse=True)
+
+_GENDER_KEYWORDS = sorted([
+    "he/him", "she/her", "they/them", "he/his", "she/hers",
+    "mother of", "father of", "mom of", "dad of",
+    "mr.", "mrs.", "ms.", "mx.",
+    "fraternity", "sorority",
+    "women in tech", "women in stem", "women in engineering",
+    "society of women engineers", "SWE", "girls who code",
+    "women's", "men's", "brotherhood", "sisterhood",
+    "maternity", "paternity",
+    "I am a woman", "I am a man", "as a woman", "as a man",
+    "female engineer", "male engineer", "women who code",
+    "Ladies in Tech", "Anita Borg Institute", "AnitaB.org", "Grace Hopper",
+], key=len, reverse=True)
+
+_SENSITIVE_ALIAS = {
+    "pronouns": "gender", "sex": "gender", "mother": "gender", "father": "gender",
+    "gender based affiliations": "gender", "gender affiliations": "gender",
+    "gender_based_affiliations": "gender",
+    "ethnicity": "race", "racial": "race", "ethnic": "race",
+    "race based affiliations": "race", "race affiliations": "race",
+    "race_based_affiliations": "race",
+    "religious": "religion", "faith": "religion", "church": "religion",
+    "mosque": "religion", "temple": "religion", "spiritual": "religion",
+    "religion based affiliations": "religion", "religion affiliations": "religion",
+    "religion_based_affiliations": "religion",
+}
+
+
+def _extract_fields_locally(text: str, categories: List[str]) -> Dict[str, List[str]]:
+    """Local keyword-based fallback when LLM extraction is unavailable."""
+    if not text or not categories:
+        return {}
+
+    results: Dict[str, List[str]] = {}
+    text_lower = text.lower()
+    personal_info = None
+
+    pii_field_map = {
+        "name": "name", "email": "email", "e-mail": "email",
+        "phone": "phone", "phone_number": "phone", "contact": "phone",
+        "address": "address", "location": "address",
+        "linkedin": "linkedin", "github": "github",
+    }
+
+    for cat in categories:
+        found: List[str] = []
+        resolved = _SENSITIVE_ALIAS.get(cat, cat)
+
+        # Also resolve long-form user categories like "race based organizations or anything race related information"
+        for alias_key, alias_val in _SENSITIVE_ALIAS.items():
+            if alias_key in cat:
+                resolved = alias_val
+                break
+        # Check for core keywords in category name
+        if "race" in cat or "ethnic" in cat:
+            resolved = "race"
+        elif "gender" in cat or "pronoun" in cat:
+            resolved = "gender"
+        elif "religio" in cat or "faith" in cat:
+            resolved = "religion"
+
+        if cat in pii_field_map or resolved in pii_field_map:
+            if personal_info is None:
+                personal_info = extract_personal_info(text)
+            pii_key = pii_field_map.get(cat) or pii_field_map.get(resolved)
+            if pii_key and personal_info.get(pii_key):
+                found.append(personal_info[pii_key])
+
+        elif resolved == "race":
+            for org in _RACE_KEYWORDS:
+                if org.lower() in text_lower:
+                    found.append(org)
+
+        elif resolved == "religion":
+            for kw in _RELIGION_KEYWORDS:
+                if kw.lower() in text_lower:
+                    found.append(kw)
+
+        elif resolved == "gender":
+            for kw in _GENDER_KEYWORDS:
+                if kw.lower() in text_lower:
+                    found.append(kw)
+
+        else:
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for ln in lines:
+                if cat in ln.lower() and len(ln) > 2:
+                    found.append(ln)
+
+        if found:
+            results[resolved] = found
+
+    return results
+
+
+# ---------- Anonymization helper ----------
 def anonymize_text(text: str, fields: Optional[List[str]]) -> Tuple[str, Dict[str, List[str]]]:
-    """Two-pass anonymization: LLM extracts bias content, then we redact it.
+    """Anonymize resume text by extracting and redacting bias-related content.
 
-    Pass 1 – call extract_fields_with_llm() to identify all bias-related strings.
-    Redact  – replace every found string with *** using case-insensitive matching.
-    The cleaned text is then used in Pass 2 (the evaluation prompt) elsewhere.
+    Strategy: try LLM extraction first (more thorough). If it fails or returns
+    empty (e.g. blocked by guardrail), fall back to local keyword matching so
+    redaction always happens.
 
-    Returns (anonymized_text, extracted_dict) so the caller can inspect
-    which strings were identified for redaction.
+    Returns (anonymized_text, extracted_dict).
     """
     if not text or not fields:
         return text, {}
@@ -228,11 +367,16 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> Tuple[str, Dict[st
             if pii not in cats:
                 cats.append(pii)
 
-    # Strip synthetic bias-group test codes before LLM sees the text
+    # Strip synthetic bias-group test codes first
     s = strip_bias_codes(s)
 
-    # Pass 1: LLM extracts all bias-related strings
+    # Try LLM extraction (Pass 1)
     extracted = extract_fields_with_llm(s, cats)
+
+    # Fallback: if LLM returned nothing, use local keyword matching
+    if not extracted:
+        print("DEBUG anonymize_text: LLM extraction empty, using LOCAL fallback")
+        extracted = _extract_fields_locally(s, cats)
 
     print(f"DEBUG anonymize_text: cats={cats}")
     print(f"DEBUG anonymize_text: extracted keys={list(extracted.keys())}")
@@ -245,7 +389,6 @@ def anonymize_text(text: str, fields: Optional[List[str]]) -> Tuple[str, Dict[st
     REDACT_TAG = "***"
 
     # PHASE 1: Redact PII fields (email, linkedin, github, phone, address) FIRST
-    # These contain name substrings and must be replaced before name parts break them
     pii_fields = {"email", "linkedin", "github", "phone", "address", "location"}
     for field in list(extracted.keys()):
         if field not in pii_fields:
