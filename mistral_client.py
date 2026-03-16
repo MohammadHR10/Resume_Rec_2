@@ -42,6 +42,9 @@ def call_mistral(prompt):
 
     response = requests.post(API_URL, headers=headers, json=payload)
 
+    if response.status_code != 200:
+        print(f"LLM call failed (status {response.status_code}): {response.text[:200]}")
+
     try:
         return response.json()
     except Exception as e:
