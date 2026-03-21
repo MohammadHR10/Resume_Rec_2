@@ -1707,22 +1707,28 @@ FINAL REMINDER:
                                         data[field_name] = None
                                 evaluation = EvaluationModel.model_construct(**data)
 
+                            # If LLM couldn't extract the real name, fill it from PII extraction
+                            eval_name = getattr(evaluation, 'candidate_name', "") or ""
+                            if not eval_name or eval_name.strip().lower() == "candidate":
+                                real_name = extracted.get("name", "") if extracted else ""
+                                if real_name:
+                                    try:
+                                        evaluation.candidate_name = real_name
+                                    except Exception:
+                                        pass
+
                             # If any field is anonymized, capture the mapping
                             anonymize_list = [c.strip().lower() for c in st.session_state.get('anonymize_fields', [])]
                             if anonymize_list:
-                                # If name is anonymized, assign Candidate N
-                                # Check if any field contains "name" (e.g., "name", "individual's name", "candidate name")
                                 has_name = any('name' in field for field in anonymize_list)
                                 if has_name:
                                     st.session_state.candidate_index += 1
                                     placeholder = f"Candidate {st.session_state.candidate_index}"
-                                    # Override displayed candidate name
                                     try:
                                         evaluation.candidate_name = placeholder
                                     except Exception:
                                         pass
                                 else:
-                                    # If name not anonymized, use the actual candidate name as placeholder key
                                     placeholder = evaluation.candidate_name if hasattr(evaluation, 'candidate_name') else "Unknown"
                                 
                                 # Build redaction map from LLM extraction results
