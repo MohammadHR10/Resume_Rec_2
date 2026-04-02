@@ -9,183 +9,6 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-
-# ---------- Score normalization (post-processing) ----------
-def detect_target_format(definitions: List[str]) -> dict:
-    """Detect the target scoring format from Core Criteria Definitions.
-    
-    Returns dict with 'type' and 'converter' function.
-    """
-    combined = ' '.join(str(d).lower() for d in definitions if d)
-    
-    # Check for 1-100 range
-    if any(x in combined for x in ['to 100', '1-100', '0-100', 'out of 100', '(100)', '100 (']):
-        return {'type': 'int_100', 'range': (0, 100)}
-    
-    # Check for 1-5 range
-    if any(x in combined for x in ['to 5', '1-5', 'out of 5', '/5', '(5)', '5 (']):
-        return {'type': 'int_5', 'range': (1, 5)}
-    
-    # Check for 1-10 range
-    if any(x in combined for x in ['to 10', '1-10', 'out of 10', '/10', '(10)', '10 (']):
-        return {'type': 'int_10', 'range': (1, 10)}
-    
-    # Check for percentages
-    if any(x in combined for x in ['percentage', '%', 'percent']):
-        return {'type': 'percentage', 'range': (0, 100)}
-    
-    # Check for string labels - Good/Medium/Poor style
-    if 'good' in combined and ('medium' in combined or 'poor' in combined):
-        return {'type': 'labels', 'labels': ['Poor', 'Medium', 'Good']}
-    
-    # Check for High/Medium/Low style
-    if 'high' in combined and ('medium' in combined or 'low' in combined):
-        return {'type': 'labels', 'labels': ['Low', 'Medium', 'High']}
-    
-    # Default to whatever format - no conversion
-    return {'type': 'passthrough', 'range': None}
-
-
-def normalize_score(value: Any, target_format: dict) -> Any:
-    """Convert a score value to the target format."""
-    if value is None:
-        return None
-    
-    val_str = str(value).strip()
-    val_lower = val_str.lower()
-    
-    # Skip normalization for Met/Not Met/Partially Met (custom field specific)
-    if val_lower in ('met', 'not met', 'partially met', 'n/a'):
-        return val_str
-    
-    # Extract numeric value from various formats
-    numeric_val = None
-    
-    # Try to extract number from percentage (e.g., "85%")
-    if '%' in val_str:
-        try:
-            numeric_val = float(val_str.replace('%', '').strip())
-        except ValueError:
-            pass
-    
-    # Try to extract number from fraction (e.g., "4/5")
-    elif '/' in val_str:
-        try:
-            parts = val_str.split('/')
-            numeric_val = float(parts[0].strip())
-        except (ValueError, IndexError):
-            pass
-    
-    # Try direct number conversion
-    else:
-        try:
-            numeric_val = float(val_str)
-        except ValueError:
-            pass
-    
-    # Map string labels to numeric if needed
-    if numeric_val is None:
-        label_to_numeric = {
-            'poor': 1, 'low': 1, 'weak': 1, 'bad': 1,
-            'medium': 2, 'moderate': 2, 'fair': 2, 'average': 2,
-            'good': 3, 'high': 3, 'strong': 3,
-            'excellent': 4, 'exceptional': 4, 'outstanding': 4,
-        }
-        if val_lower in label_to_numeric:
-            numeric_val = label_to_numeric[val_lower]
-    
-    # If we couldn't extract a number and target is passthrough, return original
-    if numeric_val is None:
-        if target_format['type'] == 'passthrough':
-            return value
-        # For labels target, try to map
-        if target_format['type'] == 'labels':
-            labels = target_format.get('labels', ['Low', 'Medium', 'High'])
-            if val_str in labels:
-                return val_str
-            # Try case-insensitive match
-            for lbl in labels:
-                if val_lower == lbl.lower():
-                    return lbl
-            return value
-        return value
-    
-    # Now convert numeric_val to target format
-    if target_format['type'] == 'int_100':
-        # Scale to 0-100 if from smaller range
-        if numeric_val <= 10:
-            scaled = int(numeric_val * 10)
-        elif numeric_val <= 5:
-            scaled = int(numeric_val * 20)
-        else:
-            scaled = int(numeric_val)
-        return max(0, min(100, scaled))
-    
-    elif target_format['type'] == 'int_5':
-        # Scale to 1-5
-        if numeric_val > 10:
-            scaled = int(numeric_val / 20)
-        elif numeric_val > 5:
-            scaled = int(numeric_val / 2)
-        else:
-            scaled = int(numeric_val)
-        return max(1, min(5, scaled))
-    
-    elif target_format['type'] == 'int_10':
-        # Scale to 1-10
-        if numeric_val > 10:
-            scaled = int(numeric_val / 10)
-        else:
-            scaled = int(numeric_val)
-        return max(1, min(10, scaled))
-    
-    elif target_format['type'] == 'percentage':
-        # Scale to 0-100 and add %
-        if numeric_val <= 5:
-            scaled = int(numeric_val * 20)
-        elif numeric_val <= 10:
-            scaled = int(numeric_val * 10)
-        else:
-            scaled = int(numeric_val)
-        return f"{max(0, min(100, scaled))}%"
-    
-    elif target_format['type'] == 'labels':
-        labels = target_format.get('labels', ['Low', 'Medium', 'High'])
-        # Map numeric to labels
-        if numeric_val <= 33 or numeric_val <= 1:
-            return labels[0]
-        elif numeric_val <= 66 or numeric_val <= 2:
-            return labels[1] if len(labels) > 1 else labels[0]
-        else:
-            return labels[-1]
-    
-    # Passthrough
-    return value
-
-
-def normalize_evaluation_scores(data: dict, target_format: dict) -> dict:
-    """Normalize all score fields in evaluation data to match target format."""
-    score_fields = [
-        'key_strengths_score',
-        'experience_score',
-        'skills_match_score',
-        'overall_score',
-    ]
-    
-    # Also find any custom field scores (ending in _score)
-    for key in list(data.keys()):
-        if key.endswith('_score') and key not in score_fields:
-            score_fields.append(key)
-    
-    # Normalize each score field
-    for field in score_fields:
-        if field in data and data[field] is not None:
-            original = data[field]
-            normalized = normalize_score(original, target_format)
-            data[field] = normalized
-    
-    return data
-
 # ---------- LLM-based field extraction for anonymization ----------
 def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, List[str]]:
     """Use LLM to dynamically extract bias-related content from resume text.
@@ -1299,33 +1122,18 @@ SCORING DEFINITIONS (read these carefully to identify the scoring format):
 - Experience: {experience_def}
 - Skills Match: {skills_match_def}
 
-=== CRITICAL: SCORE FORMAT DETECTION AND ENFORCEMENT ===
-
-STEP 1 - DETECT THE FORMAT from definitions above:
-- If you see "1 to 100", "1-100", "out of 100", "0-100" → FORMAT IS: integers 0-100
-- If you see "1 to 5", "1-5", "out of 5" → FORMAT IS: integers 1-5
-- If you see "1 to 10", "1-10", "out of 10" → FORMAT IS: integers 1-10
-- If you see "percentage", "%" → FORMAT IS: integers 0-100 (no % symbol)
-- If you see "Good/Medium/Poor" or similar labels → FORMAT IS: those exact labels
-- If you see "I, II, III, IV, V" Roman numerals → FORMAT IS: Roman numerals
-
-STEP 2 - APPLY THE DETECTED FORMAT TO ALL SCORES:
-ALL of these fields MUST use the SAME format:
-- key_strengths_score
-- experience_score  
-- skills_match_score
-- overall_score
-- ALL custom field *_score fields
-
-STEP 3 - FORBIDDEN OUTPUTS:
-- NEVER output "High", "Strong", "Excellent" unless those exact words are in the definition
-- NEVER output "85%" with percent sign - use integer 85 instead
-- NEVER output "4/5" with slash - use integer 4 or 80 depending on detected format
-- NEVER mix integers with labels in the same evaluation
-
-EXAMPLE: If definition says "Score from 1 to 100":
-CORRECT: "key_strengths_score": 85, "experience_score": 90, "overall_score": 88
-WRONG: "key_strengths_score": "High", "experience_score": "90%", "overall_score": 4
+MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
+1. First, identify the scoring format from the definitions above (e.g., 1-5, 1-100, I-V, Good/Medium/Poor, percentages, letter grades, or any other format specified)
+2. Use that EXACT SAME scoring format for ALL score fields in your response:
+   - key_strengths_score
+   - experience_score
+   - skills_match_score
+   - overall_score
+   - ALL custom field scores (unless a custom field explicitly specifies a different format like "Met/Not Met")
+3. DO NOT mix formats. If the definition says "Score from 1 to 100", ALL scores must be integers from 1-100.
+4. If the definition says "Good, Medium, Poor", ALL scores must use those exact labels.
+5. If the definition uses Roman numerals (I, II, III, IV, V), ALL scores must use Roman numerals.
+6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
 
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
@@ -1346,21 +1154,24 @@ CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
 {rules_payload}
 
 EVALUATION RULES (follow ALL):
-1) FIRST identify the score format from SCORING DEFINITIONS, then use ONLY that format for ALL scores
-2) For EACH custom field, provide ALL THREE: value, score, AND explanation
-   - Custom field scores use same format as core scores UNLESS instruction explicitly says "Met/Not Met"
-3) If instruction sets threshold/condition, evaluate and set score accordingly
-4) Calculate overall_score considering ALL individual scores
-5) Base scores SOLELY on demonstrated skills, experience, projects relevant to the job
-6) Keep all text values concise, avoid special characters/newlines
-7) Return ONLY the JSON object
+1) Apply the scoring format identified from the SCORING DEFINITIONS above
+2) For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
+   - NEVER leave any custom field score empty or null
+   - Custom field scores should use the same format as core scores UNLESS the instruction explicitly specifies a different format
+   - MANDATORY: Every custom field MUST have a non-null score value
+3) If instruction sets threshold/condition, evaluate the condition and set the score accordingly
+   - Document this logic in custom_considerations with applied=true and explain the impact
+4) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
+   - overall_score MUST use the same format as the other scores
+5) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
+6) overall_explanation should summarize key drivers from subscores
+7) Keep all text values concise and avoid special characters, newlines, or control characters
+8) Return ONLY the JSON object
 
-BEFORE YOU OUTPUT - VERIFY SCORE FORMAT CONSISTENCY:
-Look at all your *_score values. They MUST all be the same type:
-- If format is 1-100: all scores must be integers like 85, 90, 75
-- If format is 1-5: all scores must be integers like 4, 5, 3
-- If format is labels: all scores must use exact same labels
-DO NOT OUTPUT until all scores match the detected format."""
+FINAL CONSISTENCY CHECK (do this before outputting):
+- Look at your key_strengths_score, experience_score, skills_match_score, and overall_score
+- Verify they ALL use the EXACT SAME format (all numbers, all percentages, all labels, etc.)
+- If you see mixed formats, FIX them to match before outputting"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
@@ -1867,16 +1678,6 @@ DO NOT OUTPUT until all scores match the detected format."""
     
                             # Normalize JSON keys before validation (spaces → underscores, lowercase)
                             data = normalize_json_keys(data)
-                            
-                            # Normalize scores to match the format from Core Criteria Definitions
-                            if 'core_criteria_defs' in st.session_state:
-                                defs = [
-                                    st.session_state.core_criteria_defs.get('key_strengths', {}).get('definition', ''),
-                                    st.session_state.core_criteria_defs.get('experience', {}).get('definition', ''),
-                                    st.session_state.core_criteria_defs.get('skills_match', {}).get('definition', ''),
-                                ]
-                                target_format = detect_target_format(defs)
-                                data = normalize_evaluation_scores(data, target_format)
                             
                             # Validate with dynamic Pydantic model
                             try:
