@@ -1048,6 +1048,94 @@ with tab1:
             for i, (filename, _) in enumerate(all_resume_files, 1):
                 st.write(f"{i}. {filename}")
     
+    # ---------- Scoring format detection ----------
+    def detect_scoring_format(definitions: list) -> dict:
+        """Analyze core criteria definitions to detect the scoring format.
+        
+        Returns a dict with:
+        - 'type': 'numeric_range', 'percentage', 'letter_grade', 'string_labels', 'unknown'
+        - 'format_instruction': explicit instruction for the LLM
+        - 'example': example of a valid score
+        """
+        if not definitions:
+            return {'type': 'unknown', 'format_instruction': 'Use integers from 1 to 5', 'example': '4'}
+        
+        # Combine all definitions to analyze
+        combined = ' '.join(str(d).lower() for d in definitions if d)
+        
+        # Check for numeric ranges like "1 to 100", "0-100", "1 (Poor) to 100 (Exceptional)"
+        if any(x in combined for x in ['to 100', '0-100', '1-100', 'out of 100', '/100']):
+            return {
+                'type': 'numeric_range_100',
+                'format_instruction': 'ALL scores must be integers from 0 to 100. Do NOT use percentages, letters, or words.',
+                'example': '85'
+            }
+        
+        # Check for 1-5 scale
+        if any(x in combined for x in ['to 5', '1-5', 'out of 5', '/5', '1 (poor) to 5']):
+            return {
+                'type': 'numeric_range_5',
+                'format_instruction': 'ALL scores must be integers from 1 to 5. Do NOT use percentages, letters, or words.',
+                'example': '4'
+            }
+        
+        # Check for 1-10 scale
+        if any(x in combined for x in ['to 10', '1-10', 'out of 10', '/10']):
+            return {
+                'type': 'numeric_range_10',
+                'format_instruction': 'ALL scores must be integers from 1 to 10. Do NOT use percentages, letters, or words.',
+                'example': '8'
+            }
+        
+        # Check for percentages
+        if any(x in combined for x in ['percentage', '%', 'percent']):
+            return {
+                'type': 'percentage',
+                'format_instruction': 'ALL scores must be percentages (0% to 100%). Include the % symbol.',
+                'example': '85%'
+            }
+        
+        # Check for letter grades
+        if any(x in combined for x in ['a/b/c', 'a, b, c', 'grade a', 'grade b', 'letter grade']):
+            return {
+                'type': 'letter_grade',
+                'format_instruction': 'ALL scores must be letter grades: A, B, C, D, or F.',
+                'example': 'B'
+            }
+        
+        # Check for string labels like "good, medium, bad" or "high, medium, low"
+        string_patterns = [
+            ('good', 'medium', 'bad'),
+            ('good', 'medium', 'poor'),
+            ('high', 'medium', 'low'),
+            ('excellent', 'good', 'fair', 'poor'),
+            ('strong', 'moderate', 'weak'),
+            ('exceptional', 'proficient', 'developing', 'beginner'),
+        ]
+        for pattern in string_patterns:
+            if all(word in combined for word in pattern[:2]):
+                labels = ', '.join(p.capitalize() for p in pattern)
+                return {
+                    'type': 'string_labels',
+                    'format_instruction': f'ALL scores must be one of these exact labels: {labels}. Do NOT use numbers or percentages.',
+                    'example': pattern[0].capitalize()
+                }
+        
+        # Check for met/not met
+        if 'met' in combined and 'not met' in combined:
+            return {
+                'type': 'met_not_met',
+                'format_instruction': 'ALL scores must be one of: Met, Not Met, Partially Met.',
+                'example': 'Met'
+            }
+        
+        # Default to numeric 1-5 if nothing detected
+        return {
+            'type': 'numeric_range_5',
+            'format_instruction': 'ALL scores must be integers from 1 to 5. Do NOT use percentages, letters, or words.',
+            'example': '4'
+        }
+
     # ---------- Prompt/schema ----------
     def schema_text(job_title: str, department: str, job_description: str, custom_fields: list) -> str:
         lines = [
@@ -1110,22 +1198,31 @@ with tab1:
             key_strengths_def = st.session_state.core_criteria_defs['key_strengths']['definition']
             experience_def = st.session_state.core_criteria_defs['experience']['definition']
             skills_match_def = st.session_state.core_criteria_defs['skills_match']['definition']
+            # Detect scoring format from the definitions for consistency
+            scoring_format = detect_scoring_format([key_strengths_def, experience_def, skills_match_def])
         else:
-            key_strengths_def = "Evaluate key_strengths based on job requirements. Use the scoring system defined in your evaluation criteria."
-            experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Use the scoring system defined in your evaluation criteria."
-            skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Use the scoring system defined in your evaluation criteria."
+            key_strengths_def = "Evaluate key_strengths based on job requirements. Score from 1 (Poor) to 5 (Exceptional)."
+            experience_def = "Evaluate experience covering both years of experience AND relevance to this specific role. Score from 1 (Poor) to 5 (Exceptional)."
+            skills_match_def = "Evaluate skills_match for technical/functional skill alignment. Score from 1 (Poor) to 5 (Exceptional)."
+            scoring_format = {'type': 'numeric_range_5', 'format_instruction': 'ALL scores must be integers from 1 to 5.', 'example': '4'}
+        
+        # Build the consistency instruction
+        consistency_instruction = scoring_format['format_instruction']
+        score_example = scoring_format['example']
     
         return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
+
+MANDATORY SCORING CONSISTENCY RULE (MOST IMPORTANT):
+{consistency_instruction}
+- This applies to ALL score fields: key_strengths_score, experience_score, skills_match_score, overall_score, and ALL custom field scores
+- Example of a valid score: {score_example}
+- ALL scores in your output MUST use this EXACT same format
+- DO NOT mix formats (e.g., do not use "85" for one field and "High" for another)
+- NEVER add "/5", "out of 5", "/3", or any suffix after scores
 
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
 - Focus on job-relevant competencies demonstrated in the resume
-
-CRITICAL FORMATTING RULE: 
-- For ALL score fields, output ONLY the raw score value itself
-- NEVER add "/5", "out of 5", "/3", or any suffix after scores
-- Examples of CORRECT outputs: 3, Poor, Red, 85%, B
-- Examples of INCORRECT outputs: 3/5, Poor/5, Red/5, 85%/5, B/5
     
 REQUIRED JSON (exact keys/types):
 {schema}
@@ -1141,52 +1238,33 @@ RESUME (verbatim evidence source):
 CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
 {rules_payload}
 
-INSTRUCTION EXAMPLES (how to interpret and apply):
-- "if no volunteering, give 10" → Check resume → No volunteering found → Set score to 10 → Mark applied=true
-- "if University outside Texas, score < 2" → Check resume → University in California → Set score to 1 → Mark applied=true
-- "rate leadership as Strong/Weak" → Evaluate leadership → Determine "Strong" or "Weak" → Set score to chosen value
-
 EVALUATION RULES (follow ALL):
 1) {key_strengths_def}
-   - The definition above specifies HOW to score this field (e.g., 1-5, Red/Yellow/Green, percentage, letter grade, etc.)
-   - Use EXACTLY the scoring system described in the definition
-   - Output ONLY the score value (e.g., "3", "Red", "85%", "B") - NEVER add "/5" or "/3" or any suffix
+   - Use the scoring format specified above consistently
 2) {experience_def}
-   - The definition above specifies HOW to score this field
-   - Use EXACTLY the scoring system described in the definition
-   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+   - Use the scoring format specified above consistently
 3) {skills_match_def}
-   - The definition above specifies HOW to score this field
-   - Use EXACTLY the scoring system described in the definition
-   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+   - Use the scoring format specified above consistently
 4) CRITICAL - For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
    - NEVER leave any custom field score empty or null
-   - Each custom field instruction may define its own scoring system (e.g., "rate as A/B/C", "score 1-10", "High/Medium/Low")
-   - If the instruction says "if X then recommended" → score should be "Recommended" or "Not Recommended"
-   - If the instruction mentions a condition → evaluate it and set score to reflect the outcome
-   - If no specific scoring format is given, use: "Met", "Not Met", "Partially Met", or "N/A"
+   - Custom field scores MUST also use the same format as core scores: {score_example}
+   - Exception: If instruction explicitly says "Met/Not Met" or "Recommended/Not Recommended", use those exact words
    - MANDATORY: Every custom field MUST have a non-null score value
-5) If instruction sets threshold/condition (e.g., "if X then score=10"), YOU MUST evaluate the condition and set the score accordingly
-   - Example: "if no volunteering, give 10" → Check resume for volunteering → If absent, set score to 10
-   - Example: "if they have research publication, they are recommended" → Check resume → Set score to "Recommended" or "Not Recommended"
+5) If instruction sets threshold/condition (e.g., "if X then score=10"), evaluate the condition and set the score accordingly
    - Document this logic in custom_considerations with applied=true and explain the impact
 6) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
-   - Use the same scoring system as defined for overall evaluation
-   - Output ONLY the score value - NEVER add "/5" or "/3" or any suffix
+   - overall_score MUST use the same format: {score_example}
 7) Custom field scores based on instructions MUST significantly impact overall_score
-   - If a custom field instruction gives an exceptionally high/low score, reflect this in the overall score
-   - Example: If "personal_experience_score" is 10 due to instruction, this should positively impact overall_score
 8) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
 9) overall_explanation should summarize key drivers from subscores
 10) Keep all text values concise and avoid special characters, newlines, or control characters
-11) ABSOLUTE PROHIBITION: NEVER output "1/5", "2/5", "3/5", "Poor/5", "Medium/5", "High/5", or ANY score with a slash and number after it
-12) IMPORTANT: Adapt your scoring format based on what each field definition specifies. Do NOT default to 1-5 unless explicitly stated.
-13) Return ONLY the JSON object
+11) Return ONLY the JSON object
 
-FINAL REMINDER: 
-- Check every score field before outputting - if you see "/5" or "/3" anywhere, REMOVE IT
-- EVERY custom field MUST have a score value (never null or empty)
-- Output only: 1, 2, 3, Poor, Medium, High, Red, Met, Not Met, Recommended, Not Recommended, etc."""
+FINAL REMINDER - CONSISTENCY CHECK:
+Before outputting, verify that ALL score fields use the SAME format.
+- If your format is numeric (like {score_example}), ALL scores must be numeric
+- If your format is string labels, ALL scores must use the same label set
+- DO NOT output mixed formats like "85" and "High" in the same response"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
