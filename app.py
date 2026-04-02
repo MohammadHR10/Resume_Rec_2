@@ -1124,16 +1124,19 @@ SCORING DEFINITIONS (read these carefully to identify the scoring format):
 
 MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
 1. First, identify the scoring format from the definitions above (e.g., 1-5, 1-100, I-V, Good/Medium/Poor, percentages, letter grades, or any other format specified)
-2. Use that EXACT SAME scoring format for ALL score fields in your response:
+2. Use that EXACT SAME scoring format for ALL score fields in your response INCLUDING custom fields:
    - key_strengths_score
    - experience_score
    - skills_match_score
    - overall_score
-   - ALL custom field scores (unless a custom field explicitly specifies a different format like "Met/Not Met")
+   - minimum_qualifications_score (USE SAME FORMAT - numeric, not "Met")
+   - preferred_qualifications_score (USE SAME FORMAT - numeric, not "Partial")
+   - ALL other custom field *_score fields (USE SAME FORMAT)
 3. DO NOT mix formats. If the definition says "Score from 1 to 100", ALL scores must be integers from 1-100.
-4. If the definition says "Good, Medium, Poor", ALL scores must use those exact labels.
-5. If the definition uses Roman numerals (I, II, III, IV, V), ALL scores must use Roman numerals.
+4. CUSTOM FIELD SCORES: Even if a custom field describes qualifications, use the SAME numeric format. Example: If format is 1-100, score "minimum_qualifications" as 85, NOT "Met".
+5. ONLY use "Met/Not Met" if the custom field instruction contains the EXACT words "score as Met or Not Met".
 6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
+7. NEVER use "High", "Partial", "Full" for scores - use the detected numeric format.
 
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
@@ -1154,12 +1157,12 @@ CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
 {rules_payload}
 
 EVALUATION RULES (follow ALL):
-1) Apply the scoring format identified from the SCORING DEFINITIONS above
+1) Apply the scoring format identified from the SCORING DEFINITIONS above to ALL scores
 2) For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
    - NEVER leave any custom field score empty or null
-   - Custom field scores should use the same format as core scores UNLESS the instruction explicitly specifies a different format
-   - MANDATORY: Every custom field MUST have a non-null score value
-3) If instruction sets threshold/condition, evaluate the condition and set the score accordingly
+   - Custom field scores MUST use the SAME FORMAT as core scores (e.g., if core uses 1-100, custom fields use 1-100)
+   - MANDATORY: Every custom field MUST have a non-null score value in the correct format
+3) If instruction sets threshold/condition, evaluate how well it's met and express as a score in the detected format
    - Document this logic in custom_considerations with applied=true and explain the impact
 4) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
    - overall_score MUST use the same format as the other scores
@@ -1169,8 +1172,9 @@ EVALUATION RULES (follow ALL):
 8) Return ONLY the JSON object
 
 FINAL CONSISTENCY CHECK (do this before outputting):
-- Look at your key_strengths_score, experience_score, skills_match_score, and overall_score
-- Verify they ALL use the EXACT SAME format (all numbers, all percentages, all labels, etc.)
+- Look at ALL your *_score values: key_strengths_score, experience_score, skills_match_score, overall_score, AND all custom field scores
+- Verify they ALL use the EXACT SAME format (all integers if 1-100 was detected)
+- If you see "Met", "Partial", "High" when format should be numeric, CHANGE them to numbers
 - If you see mixed formats, FIX them to match before outputting"""
     
     # ---------- Pre-Evaluation Check Functions ----------
