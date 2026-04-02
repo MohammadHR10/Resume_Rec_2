@@ -1299,18 +1299,33 @@ SCORING DEFINITIONS (read these carefully to identify the scoring format):
 - Experience: {experience_def}
 - Skills Match: {skills_match_def}
 
-MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
-1. First, identify the scoring format from the definitions above (e.g., 1-5, 1-100, I-V, Good/Medium/Poor, percentages, letter grades, or any other format specified)
-2. Use that EXACT SAME scoring format for ALL score fields in your response:
-   - key_strengths_score
-   - experience_score
-   - skills_match_score
-   - overall_score
-   - ALL custom field scores (unless a custom field explicitly specifies a different format like "Met/Not Met")
-3. DO NOT mix formats. If the definition says "Score from 1 to 100", ALL scores must be integers from 1-100.
-4. If the definition says "Good, Medium, Poor", ALL scores must use those exact labels.
-5. If the definition uses Roman numerals (I, II, III, IV, V), ALL scores must use Roman numerals.
-6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
+=== CRITICAL: SCORE FORMAT DETECTION AND ENFORCEMENT ===
+
+STEP 1 - DETECT THE FORMAT from definitions above:
+- If you see "1 to 100", "1-100", "out of 100", "0-100" → FORMAT IS: integers 0-100
+- If you see "1 to 5", "1-5", "out of 5" → FORMAT IS: integers 1-5
+- If you see "1 to 10", "1-10", "out of 10" → FORMAT IS: integers 1-10
+- If you see "percentage", "%" → FORMAT IS: integers 0-100 (no % symbol)
+- If you see "Good/Medium/Poor" or similar labels → FORMAT IS: those exact labels
+- If you see "I, II, III, IV, V" Roman numerals → FORMAT IS: Roman numerals
+
+STEP 2 - APPLY THE DETECTED FORMAT TO ALL SCORES:
+ALL of these fields MUST use the SAME format:
+- key_strengths_score
+- experience_score  
+- skills_match_score
+- overall_score
+- ALL custom field *_score fields
+
+STEP 3 - FORBIDDEN OUTPUTS:
+- NEVER output "High", "Strong", "Excellent" unless those exact words are in the definition
+- NEVER output "85%" with percent sign - use integer 85 instead
+- NEVER output "4/5" with slash - use integer 4 or 80 depending on detected format
+- NEVER mix integers with labels in the same evaluation
+
+EXAMPLE: If definition says "Score from 1 to 100":
+CORRECT: "key_strengths_score": 85, "experience_score": 90, "overall_score": 88
+WRONG: "key_strengths_score": "High", "experience_score": "90%", "overall_score": 4
 
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
@@ -1331,24 +1346,21 @@ CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
 {rules_payload}
 
 EVALUATION RULES (follow ALL):
-1) Apply the scoring format identified from the SCORING DEFINITIONS above
-2) For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
-   - NEVER leave any custom field score empty or null
-   - Custom field scores should use the same format as core scores UNLESS the instruction explicitly specifies a different format
-   - MANDATORY: Every custom field MUST have a non-null score value
-3) If instruction sets threshold/condition, evaluate the condition and set the score accordingly
-   - Document this logic in custom_considerations with applied=true and explain the impact
-4) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
-   - overall_score MUST use the same format as the other scores
-5) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
-6) overall_explanation should summarize key drivers from subscores
-7) Keep all text values concise and avoid special characters, newlines, or control characters
-8) Return ONLY the JSON object
+1) FIRST identify the score format from SCORING DEFINITIONS, then use ONLY that format for ALL scores
+2) For EACH custom field, provide ALL THREE: value, score, AND explanation
+   - Custom field scores use same format as core scores UNLESS instruction explicitly says "Met/Not Met"
+3) If instruction sets threshold/condition, evaluate and set score accordingly
+4) Calculate overall_score considering ALL individual scores
+5) Base scores SOLELY on demonstrated skills, experience, projects relevant to the job
+6) Keep all text values concise, avoid special characters/newlines
+7) Return ONLY the JSON object
 
-FINAL CONSISTENCY CHECK (do this before outputting):
-- Look at your key_strengths_score, experience_score, skills_match_score, and overall_score
-- Verify they ALL use the EXACT SAME format (all numbers, all percentages, all labels, etc.)
-- If you see mixed formats, FIX them to match before outputting"""
+BEFORE YOU OUTPUT - VERIFY SCORE FORMAT CONSISTENCY:
+Look at all your *_score values. They MUST all be the same type:
+- If format is 1-100: all scores must be integers like 85, 90, 75
+- If format is 1-5: all scores must be integers like 4, 5, 3
+- If format is labels: all scores must use exact same labels
+DO NOT OUTPUT until all scores match the detected format."""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
