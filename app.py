@@ -1053,11 +1053,11 @@ with tab1:
         lines = [
             # Core - REMOVED experience_relevance (duplicate)
             '"key_strengths": ["strength1", "strength2", "strength3"],',
-            '"key_strengths_score": "<score value only: e.g. 3, Medium, Green, 85%, B - NOT 3/5 or Medium/5>",',
+            '"key_strengths_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - e.g. Yes/No/Maybe, 1-100, A/B/C, etc.>",',
             '"key_strengths_explanation": "<why this score was given for key strengths>",',
-            '"experience_score": "<score value only: e.g. 4, High, Red, 70%, A - NOT 4/5 or High/5>",',
+            '"experience_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match key_strengths_score format>",',
             '"experience_explanation": "<why this score was given for experience and relevance to role>",',
-            '"skills_match_score": "<score value only: e.g. 2, Low, Yellow, 60%, C - NOT 2/5 or Low/5>",',
+            '"skills_match_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match key_strengths_score format>",',
             '"skills_match_explanation": "<short, concrete rationale>",',
             '"potential_concerns": ["concern1", "concern2"],',
             '"recommendation": "<exactly one of: Recommended, Consider, Pass>",',
@@ -1078,11 +1078,11 @@ with tab1:
             else:
                 lines.append(f'"{field_name}": "<string or null if not found>",')
             # score + explanation (MANDATORY - never null)
-            lines.append(f'"{field_name}_score": "<REQUIRED: score value based on instruction - use Met/Not Met/Recommended/Not Recommended if no format specified>",')
+            lines.append(f'"{field_name}_score": "<REQUIRED: USE SAME FORMAT as core scores from SCORING DEFINITIONS>",')
             lines.append(f'"{field_name}_explanation": "<REQUIRED: short rationale tied to resume evidence>",')
     
         # Model provides overall score - no recomputing
-        lines.append('"overall_score": "<score value only - do NOT add /5>",')
+        lines.append('"overall_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match other scores>",')
         lines.append('"overall_explanation": "<1–2 sentences summarizing the key drivers from the subscores>",')
     
         lines.append('"custom_considerations": [')
