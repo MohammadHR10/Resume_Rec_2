@@ -1129,24 +1129,28 @@ MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
    - experience_score
    - skills_match_score
    - overall_score
-   - minimum_qualifications_score (USE SAME FORMAT - numeric, not "Met")
-   - preferred_qualifications_score (USE SAME FORMAT - numeric, not "Partial")
-   - ALL other custom field *_score fields (USE SAME FORMAT)
-3. DO NOT mix formats. If the definition says "Score from 1 to 100", ALL scores must be integers from 1-100.
-4. CUSTOM FIELD SCORES: Even if a custom field describes qualifications, use the SAME numeric format. Example: If format is 1-100, score "minimum_qualifications" as 85, NOT "Met".
-5. ONLY use "Met/Not Met" if the custom field instruction contains the EXACT words "score as Met or Not Met".
+   - minimum_qualifications_score (MUST USE SAME FORMAT as core scores above)
+   - preferred_qualifications_score (MUST USE SAME FORMAT as core scores above)
+   - ALL other custom field *_score fields (MUST USE SAME FORMAT as core scores above)
+3. DO NOT mix formats. If the definition says "Yes/No/Maybe", ALL scores must be exactly Yes, No, or Maybe.
+4. CUSTOM FIELD SCORES: Even if a custom field describes qualifications, use the SAME FORMAT as core scores.
+   - If core scores use Yes/No/Maybe, custom fields MUST also use Yes/No/Maybe (not 0, not Met, not numeric)
+   - If core scores use 1-100, custom fields MUST also use 1-100
+   - If core scores use A/B/C, custom fields MUST also use A/B/C
+5. NEVER use a different format for custom fields than core fields. Every *_score field must match.
 6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
-7. NEVER use "High", "Partial", "Full" for scores - use the detected numeric format.
+7. NEVER use "0", "Met", "Partial", "High" if the format is Yes/No/Maybe - use ONLY Yes, No, or Maybe.
 
 RECOMMENDATION CONSISTENCY RULE (MANDATORY - apply to ALL candidates equally):
 Based on the scoring format you detected, define clear cutoff thresholds for the recommendation field:
+- If scoring is Yes/No/Maybe: All Yes = "Recommended", Mix of Yes/Maybe = "Consider", Any No = "Pass"
 - If scoring is 1-100: Use thresholds like 75+ = "Recommended", 50-74 = "Consider", <50 = "Pass"
 - If scoring is 1-10: Use thresholds like 8+ = "Recommended", 5-7 = "Consider", <5 = "Pass"
 - If scoring is 1-5: Use thresholds like 4-5 = "Recommended", 3 = "Consider", 1-2 = "Pass"
 - If scoring is percentages: Use thresholds like 75%+ = "Recommended", 50-74% = "Consider", <50% = "Pass"
 - If scoring uses labels (Good/Medium/Poor): Good = "Recommended", Medium = "Consider", Poor = "Pass"
 - If scoring uses letter grades: A/B = "Recommended", C = "Consider", D/F = "Pass"
-CRITICAL: Once you define your thresholds, apply them IDENTICALLY to every candidate. If Candidate A gets overall_score=75 and is "Recommended", then Candidate B with overall_score=75 MUST also be "Recommended". No exceptions.
+CRITICAL: Once you define your thresholds, apply them IDENTICALLY to every candidate. Same scores = same recommendation. No exceptions.
 
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
