@@ -127,30 +127,84 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
 
 
 # ---------- Evidence extraction (bias-free fact extraction) ----------
+
+# Section headers that mark the start of professional content
+_PROFESSIONAL_HEADERS = {
+    'education', 'experience', 'work experience', 'professional experience',
+    'skills', 'technical skills', 'core competencies', 'projects',
+    'certifications', 'qualifications', 'achievements', 'publications',
+    'summary', 'professional summary', 'executive summary', 'objective',
+    'career objective', 'profile', 'about', 'overview',
+}
+
+# Words/phrases that indicate bias-carrying lines within body content
+_BIAS_INDICATORS = [
+    'member of', 'active member', 'proud member', 'affiliated with',
+    'he/him', 'she/her', 'they/them', 'ze/zir',
+    'pronouns:', 'pronoun:', 'gender:', 'sex:',
+    'nationality:', 'citizenship:', 'national origin:',
+    'religion:', 'religious:', 'faith:',
+    'race:', 'ethnicity:', 'ethnic:',
+    'marital status:', 'married', 'single', 'divorced',
+    'date of birth', 'dob:', 'age:',
+    'father', 'mother', 'husband', 'wife',
+]
+
+
+def _strip_header_block(text: str) -> str:
+    """Remove the personal header block (name, contact info, pronouns, etc.)
+    by finding the first professional section header and keeping everything from there."""
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+
+    for i, line in enumerate(lines):
+        stripped = line.strip().lower()
+        # Remove trailing colons/dashes for matching (e.g., "Education:" → "education")
+        cleaned = stripped.rstrip(':').rstrip('-').rstrip('–').strip()
+        if cleaned in _PROFESSIONAL_HEADERS:
+            return '\n'.join(lines[i:])
+
+    # If no section header found, skip the first 8 lines (typical header block)
+    return '\n'.join(lines[8:]) if len(lines) > 8 else text
+
+
+def _remove_bias_lines(text: str) -> str:
+    """Remove individual lines that carry bias indicators from body content."""
+    lines = text.split('\n')
+    cleaned = []
+    for line in lines:
+        lower = line.strip().lower()
+        if not lower:
+            cleaned.append(line)
+            continue
+
+        # Skip lines that are just bias codes (short, uppercase+digits with slashes)
+        if len(lower) < 15 and '/' in lower:
+            parts = lower.split('/')
+            if all(len(p) <= 5 for p in parts):
+                alpha_digit = sum(1 for c in lower if c.isalnum() or c == '/')
+                if alpha_digit / max(len(lower), 1) > 0.8:
+                    continue
+
+        # Skip lines containing bias indicator phrases
+        if any(indicator in lower for indicator in _BIAS_INDICATORS):
+            continue
+
+        cleaned.append(line)
+    return '\n'.join(cleaned)
+
+
+def clean_resume_for_extraction(text: str) -> str:
+    """Deterministically strip all bias-introducing content from resume text.
+    Two resumes with identical professional content but different bias markers
+    will produce identical output from this function."""
+    text = _strip_header_block(text)
+    text = _remove_bias_lines(text)
+    return text.strip()
+
+
 def build_extraction_prompt(resume_text: str) -> str:
-    """Build prompt that extracts only factual professional content from a resume,
-    stripping all bias-introducing information."""
-    return f"""You are a structured data extractor. Extract ONLY professional and academic facts from the resume below.
-
-STRICT EXCLUSION RULES — do NOT include any of the following:
-- Candidate name or any variation of it
-- Gender pronouns (he/him, she/her, they/them) or gender-related statements
-- Marital or family status (married, mother, father, parent, etc.)
-- Religious affiliations or memberships (e.g., "Member of [any religious org]")
-- Racial or ethnic affiliations or memberships (e.g., "Member of [any racial/ethnic org]")
-- Nationality, citizenship, or immigration status
-- Age or date of birth
-- Physical descriptions
-- Any organizational membership that is not directly professional/technical
-- Bias codes or tags (e.g., "BG1/G1", "BE1/R1", "BS2/RA2")
-
-INCLUDE ONLY:
-- Education (degree, field, university, graduation year, GPA, relevant coursework)
-- Technical skills (languages, frameworks, databases, tools, platforms)
-- Work experience (company name, job title, duration, technical achievements with metrics)
-- Projects (project name, description, tech stack, measurable outcomes)
-- Certifications and professional licenses
-- Core competencies that are technical or professional in nature
+    """Build prompt that structures pre-cleaned resume text into JSON."""
+    return f"""You are a structured data extractor. Convert the professional content below into structured JSON.
 
 Return STRICT JSON only — no prose, no markdown fences. Use this exact structure:
 {{
@@ -173,14 +227,15 @@ Return STRICT JSON only — no prose, no markdown fences. Use this exact structu
   "certifications": []
 }}
 
-RESUME TEXT:
+RESUME CONTENT:
 {resume_text}"""
 
 
 def extract_evidence(resume_text: str) -> str:
-    """Call LLM to extract structured facts from resume, stripping all bias markers.
-    Returns a formatted string of the evidence for the scoring prompt."""
-    prompt = build_extraction_prompt(resume_text)
+    """Strip bias markers deterministically, then structure the clean text via LLM.
+    Two resumes with identical professional content will produce identical evidence."""
+    cleaned_text = clean_resume_for_extraction(resume_text)
+    prompt = build_extraction_prompt(cleaned_text)
     result = call_mistral(prompt)
 
     if isinstance(result, dict) and "choices" in result:
@@ -202,7 +257,7 @@ def extract_evidence(resume_text: str) -> str:
         except (json.JSONDecodeError, Exception):
             pass
         return raw
-    return resume_text
+    return cleaned_text
 
 
 # ---------- LLM-based field extraction for anonymization ----------
