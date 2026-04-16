@@ -1143,13 +1143,16 @@ MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
 
 RECOMMENDATION CONSISTENCY RULE (MANDATORY - apply to ALL candidates equally):
 Based on the scoring format you detected, define clear cutoff thresholds for the recommendation field:
-- If scoring is Yes/No/Maybe: All Yes = "Recommended", Mix of Yes/Maybe = "Consider", Any No = "Pass"
+- If scoring is Yes/No/Maybe: All Yes = "Recommended", Mix of Yes/Maybe (with no No) = "Consider", Any No in core OR custom fields = "Pass"
 - If scoring is 1-100: Use thresholds like 75+ = "Recommended", 50-74 = "Consider", <50 = "Pass"
 - If scoring is 1-10: Use thresholds like 8+ = "Recommended", 5-7 = "Consider", <5 = "Pass"
 - If scoring is 1-5: Use thresholds like 4-5 = "Recommended", 3 = "Consider", 1-2 = "Pass"
 - If scoring is percentages: Use thresholds like 75%+ = "Recommended", 50-74% = "Consider", <50% = "Pass"
 - If scoring uses labels (Good/Medium/Poor): Good = "Recommended", Medium = "Consider", Poor = "Pass"
 - If scoring uses letter grades: A/B = "Recommended", C = "Consider", D/F = "Pass"
+
+OVERRIDE RULE: If minimum_requirements = No (or fails), the recommendation is ALWAYS "Pass" regardless of other scores.
+
 CRITICAL: Once you define your thresholds, apply them IDENTICALLY to every candidate. Same scores = same recommendation. No exceptions.
 
 EVALUATION FOCUS:
@@ -1178,12 +1181,13 @@ EVALUATION RULES (follow ALL):
    - MANDATORY: Every custom field MUST have a non-null score value in the correct format
 3) If instruction sets threshold/condition, evaluate how well it's met and express as a score in the detected format
    - Document this logic in custom_considerations with applied=true and explain the impact
-4) REQUIREMENTS FIELDS RULE (CRITICAL):
+4) REQUIREMENTS FIELDS RULE (CRITICAL - STRICTLY ENFORCED):
    - If ANY custom field name contains "requirement" or "qualification" (e.g., "minimum_requirements", "minimum_qualifications"):
      - Evaluate if the candidate meets the stated requirements
-     - If candidate does NOT meet the requirements (score below 50% of scale, or fails key criteria):
-       - The overall_score MUST be penalized significantly (drop to lower third of scale)
-       - The recommendation MUST be "Pass"
+     - If candidate does NOT meet the requirements:
+       - For Yes/No/Maybe format: If minimum_requirements = No → overall_score MUST be "No" AND recommendation MUST be "Pass"
+       - For numeric formats: If minimum_requirements < 50% of scale → overall_score drops to bottom third AND recommendation MUST be "Pass"
+       - NO EXCEPTIONS: A candidate who fails minimum requirements CANNOT have recommendation = "Consider" or "Recommended"
      - Document this in custom_considerations with applied=true and explain the disqualifying factor
 5) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
    - overall_score MUST use the same format as the other scores
