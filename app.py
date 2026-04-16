@@ -746,12 +746,20 @@ SECTION_HEADERS = {
     'personal statement', 'about me', 'about', 'overview',
     'volunteer experience', 'volunteering', 'leadership',
     'interests', 'hobbies', 'activities', 'awards', 'honors',
+    'technical expertise', 'core competencies', 'professional profile',
+    'key skills', 'areas of expertise', 'professional experience',
 }
 
 NOISE_WORDS = {
     'cisco', 'hp', 'ibm', 'microsoft', 'google', 'apple', 'amazon',
     'oracle', 'dell', 'intel', 'vmware', 'aws', 'azure', 'linux'
 }
+
+def _is_section_header(text: str) -> bool:
+    """Check if text matches any known section header (exact or with trailing colon/dash)."""
+    cleaned = text.lower().strip().rstrip(':').rstrip('-').rstrip('–').strip()
+    return cleaned in SECTION_HEADERS
+
 
 def _find_name(lines: List[str]) -> Optional[str]:
     """Find candidate name from first 10 lines using string heuristics."""
@@ -770,7 +778,7 @@ def _find_name(lines: List[str]) -> Optional[str]:
     for l in lines[:10]:
         l_lower = l.lower().strip()
 
-        if l_lower in SECTION_HEADERS or l_lower in NOISE_WORDS:
+        if _is_section_header(l) or l_lower in NOISE_WORDS:
             continue
         if '@' in l or 'http' in l_lower or 'www.' in l_lower:
             continue
@@ -786,13 +794,11 @@ def _find_name(lines: List[str]) -> Optional[str]:
                 idx = l.find(' - ')
                 parts = [l[:idx].strip(), l[idx+3:].strip()]
             candidate = parts[0].strip()
-            if _is_name_candidate(candidate):
+            if _is_name_candidate(candidate) and not _is_section_header(candidate):
                 return candidate
 
-        if _is_name_candidate(l):
-            words = l.split()
-            if not any(w.lower() in SECTION_HEADERS for w in words):
-                return l
+        if _is_name_candidate(l) and not _is_section_header(l):
+            return l
 
         # Fallback: 2-4 words, mostly alphabetic
         words = l.split()
@@ -800,7 +806,7 @@ def _find_name(lines: List[str]) -> Optional[str]:
             letter_count = sum(1 for c in l if c.isalpha() or c.isspace())
             if letter_count / len(l) >= 0.8:
                 if words[0][0].isupper():
-                    if l_lower not in SECTION_HEADERS:
+                    if not _is_section_header(l):
                         return l
 
     return None
@@ -1943,10 +1949,23 @@ EVALUATION RULES:
                                 # Fallback: derive name from PDF filename
                                 base = resume_filename.rsplit('.', 1)[0]
                                 base = base.replace('_', ' ').replace('-', ' ')
-                                # Remove common suffixes like "resume", "cv", "final"
+                                # Strip parenthesized content (bias codes like "(be1 R1)")
+                                while '(' in base and ')' in base:
+                                    open_idx = base.index('(')
+                                    close_idx = base.index(')', open_idx)
+                                    base = base[:open_idx] + base[close_idx + 1:]
+                                # Strip leading digits and whitespace
+                                while base and (base[0].isdigit() or base[0] in ' \t'):
+                                    base = base[1:]
+                                # Remove common suffixes
                                 for suffix in ['resume', 'cv', 'final', 'updated', 'v2', 'v3', 'copy']:
-                                    base = base.lower().replace(suffix, '')
-                                real_name = ' '.join(w.capitalize() for w in base.split() if w)
+                                    low = base.lower()
+                                    idx = low.find(suffix)
+                                    if idx != -1:
+                                        base = base[:idx] + base[idx + len(suffix):]
+                                # Strip stray punctuation from bias codes
+                                base = base.replace(')', '').replace('(', '')
+                                real_name = ' '.join(w.capitalize() for w in base.split() if w.strip())
                             if real_name:
                                 try:
                                     evaluation.candidate_name = real_name
