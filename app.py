@@ -9,6 +9,123 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+
+# ---------- Post-processing: deterministic business rules ----------
+def apply_business_rules(data: dict) -> dict:
+    """Apply deterministic business rules AFTER LLM returns scores.
+    
+    Uses the LLM-provided scoring_format metadata to:
+    1. Validate all scores use the same format
+    2. Determine recommendation based on overall_score
+    3. Override recommendation to "Pass" if minimum requirements fail
+    """
+    sf = data.get("scoring_format") or {}
+    scale = sf.get("scale", [])
+    best = sf.get("best")
+    worst = sf.get("worst")
+
+    score_fields = [k for k in data if k.endswith("_score") and k != "scoring_format"]
+    score_values = {k: data[k] for k in score_fields if data.get(k) is not None}
+
+    # --- Step 1: Format validation ---
+    # If we have a scale, ensure every score is in it
+    if scale:
+        scale_lower = [str(v).lower() for v in scale]
+        for field, val in score_values.items():
+            val_lower = str(val).lower()
+            if val_lower not in scale_lower:
+                # Try numeric: if scale is numeric, check range
+                try:
+                    num_val = float(val)
+                    num_scale = [float(s) for s in scale]
+                    if min(num_scale) <= num_val <= max(num_scale):
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                # Score not in scale — find closest match
+                for s in scale:
+                    if str(s).lower() == val_lower:
+                        data[field] = s
+                        break
+
+    # --- Step 2: Determine recommendation from overall_score ---
+    overall = data.get("overall_score")
+    if overall is not None and best is not None and worst is not None:
+        recommendation = _compute_recommendation(overall, scale, best, worst)
+        data["recommendation"] = recommendation
+
+    # --- Step 3: Requirements override ---
+    # If any field named *requirement* or *qualification* has the worst score, force Pass
+    for field, val in score_values.items():
+        field_lower = field.lower()
+        is_requirement = ("requirement" in field_lower or "qualification" in field_lower) and "preferred" not in field_lower
+        if is_requirement and worst is not None:
+            if str(val).lower() == str(worst).lower():
+                data["recommendation"] = "Pass"
+                # Also set overall to worst
+                data["overall_score"] = worst
+                break
+            # For numeric scales
+            try:
+                num_val = float(val)
+                num_worst = float(worst)
+                num_best = float(best)
+                midpoint = (num_best + num_worst) / 2
+                if num_val < midpoint:
+                    data["recommendation"] = "Pass"
+                    data["overall_score"] = worst if isinstance(worst, (int, float)) else val
+                    break
+            except (ValueError, TypeError):
+                pass
+
+    return data
+
+
+def _compute_recommendation(overall, scale: list, best, worst) -> str:
+    """Map overall_score to Recommended/Consider/Pass using the LLM-declared scale."""
+    # Try numeric comparison first
+    try:
+        num_overall = float(overall)
+        num_best = float(best)
+        num_worst = float(worst)
+        total_range = num_best - num_worst
+        if total_range == 0:
+            return "Consider"
+        ratio = (num_overall - num_worst) / total_range
+        if ratio >= 0.75:
+            return "Recommended"
+        elif ratio >= 0.45:
+            return "Consider"
+        else:
+            return "Pass"
+    except (ValueError, TypeError):
+        pass
+
+    # Label-based: use position in scale
+    if scale:
+        scale_lower = [str(s).lower() for s in scale]
+        overall_lower = str(overall).lower()
+        if overall_lower in scale_lower:
+            idx = scale_lower.index(overall_lower)
+            total = len(scale_lower)
+            ratio = idx / max(total - 1, 1)
+            if ratio >= 0.75:
+                return "Recommended"
+            elif ratio >= 0.4:
+                return "Consider"
+            else:
+                return "Pass"
+
+    # If best/worst are known, direct comparison
+    overall_lower = str(overall).lower()
+    if overall_lower == str(best).lower():
+        return "Recommended"
+    elif overall_lower == str(worst).lower():
+        return "Pass"
+
+    return "Consider"
+
+
 # ---------- LLM-based field extraction for anonymization ----------
 def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, List[str]]:
     """Use LLM to dynamically extract bias-related content from resume text.
@@ -664,14 +781,16 @@ class Consideration(BaseModel):
 # Core sections - REMOVED experience_relevance_score (duplicate)
 # Scores now accept any format (string, number, etc.) for dynamic scoring systems
 BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
+    'scoring_format': (Optional[Dict[str, Any]], None),
+
     'key_strengths': (List[str], ...),
-    'key_strengths_score': (Union[str, int, float], ...),  # Dynamic: can be "Red", 5, "85%", etc.
+    'key_strengths_score': (Union[str, int, float], ...),
     'key_strengths_explanation': (str, ...),
 
-    'experience_score': (Union[str, int, float], ...),  # Dynamic scoring
+    'experience_score': (Union[str, int, float], ...),
     'experience_explanation': (str, ...),
 
-    'skills_match_score': (Union[str, int, float], ...),  # Dynamic scoring
+    'skills_match_score': (Union[str, int, float], ...),
     'skills_match_explanation': (str, ...),
 
     'potential_concerns': (List[str], ...),
@@ -681,8 +800,7 @@ BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
     'job_title': (str, ...),
     'department': (str, ...),
 
-    # Use model's overall score (no recomputing)
-    'overall_score': (Union[str, int, float], ...),  # Dynamic scoring
+    'overall_score': (Union[str, int, float], ...),
     'overall_explanation': (str, ...),
 
     'custom_considerations': (List[Consideration], ...),
@@ -1051,39 +1169,35 @@ with tab1:
     # ---------- Prompt/schema ----------
     def schema_text(job_title: str, department: str, job_description: str, custom_fields: list) -> str:
         lines = [
-            # Core - REMOVED experience_relevance (duplicate)
+            '"scoring_format": {',
+            '  "scale": ["<worst_value>", "<middle_value>", "<best_value>"],',
+            '  "best": "<the best/highest value in your scale>",',
+            '  "worst": "<the worst/lowest value in your scale>"',
+            '},',
             '"key_strengths": ["strength1", "strength2", "strength3"],',
-            '"key_strengths_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - e.g. Yes/No/Maybe, 1-100, A/B/C, etc.>",',
+            '"key_strengths_score": "<score using format from SCORING DEFINITIONS>",',
             '"key_strengths_explanation": "<why this score was given for key strengths>",',
-            '"experience_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match key_strengths_score format>",',
+            '"experience_score": "<score using SAME format>",',
             '"experience_explanation": "<why this score was given for experience and relevance to role>",',
-            '"skills_match_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match key_strengths_score format>",',
+            '"skills_match_score": "<score using SAME format>",',
             '"skills_match_explanation": "<short, concrete rationale>",',
             '"potential_concerns": ["concern1", "concern2"],',
-            '"recommendation": "<exactly one of: Recommended, Consider, Pass>",',
             '"candidate_name": "<extract from resume or use \\"Candidate\\">",',
             f'"job_title": "{job_title}",',
             f'"department": "{department}",'
         ]
     
-        # Only support string and boolean custom fields
         for f in [cf for cf in custom_fields if cf.get('type') in ('string','boolean')]:
-            # Normalize field name: spaces → underscores, lowercase
             field_name = f["name"].strip().replace(' ', '_').lower()
-            # value
-            if f["type"] == "string":
-                lines.append(f'"{field_name}": "<string or null if not found>",')
-            elif f["type"] == "boolean":
+            if f["type"] == "boolean":
                 lines.append(f'"{field_name}": <true|false|null>,')
             else:
                 lines.append(f'"{field_name}": "<string or null if not found>",')
-            # score + explanation (MANDATORY - never null)
-            lines.append(f'"{field_name}_score": "<REQUIRED: USE SAME FORMAT as core scores from SCORING DEFINITIONS>",')
-            lines.append(f'"{field_name}_explanation": "<REQUIRED: short rationale tied to resume evidence>",')
+            lines.append(f'"{field_name}_score": "<score using SAME format as core scores>",')
+            lines.append(f'"{field_name}_explanation": "<short rationale tied to resume evidence>",')
     
-        # Model provides overall score - no recomputing
-        lines.append('"overall_score": "<USE EXACT FORMAT FROM SCORING DEFINITIONS - must match other scores>",')
-        lines.append('"overall_explanation": "<1–2 sentences summarizing the key drivers from the subscores>",')
+        lines.append('"overall_score": "<score using SAME format as other scores>",')
+        lines.append('"overall_explanation": "<1-2 sentences summarizing key drivers from subscores>",')
     
         lines.append('"custom_considerations": [')
         lines.append('  { "field": "<field name>", "instruction": "<the HR rule text>", "applied": <true|false>, "impact": "<what changed and effect on overall>" }')
@@ -1117,48 +1231,17 @@ with tab1:
     
         return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
 
-SCORING DEFINITIONS (read these carefully to identify the scoring format):
+SCORING DEFINITIONS (identify the scoring format from these):
 - Key Strengths: {key_strengths_def}
 - Experience: {experience_def}
 - Skills Match: {skills_match_def}
 
-MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
-1. First, identify the scoring format from the definitions above (e.g., 1-5, 1-100, I-V, Good/Medium/Poor, percentages, letter grades, or any other format specified)
-2. Use that EXACT SAME scoring format for ALL score fields in your response INCLUDING custom fields:
-   - key_strengths_score
-   - experience_score
-   - skills_match_score
-   - overall_score
-   - minimum_qualifications_score (MUST USE SAME FORMAT as core scores above)
-   - preferred_qualifications_score (MUST USE SAME FORMAT as core scores above)
-   - ALL other custom field *_score fields (MUST USE SAME FORMAT as core scores above)
-3. DO NOT mix formats. If the definition says "Yes/No/Maybe", ALL scores must be exactly Yes, No, or Maybe.
-4. CUSTOM FIELD SCORES: Even if a custom field describes qualifications, use the SAME FORMAT as core scores.
-   - If core scores use Yes/No/Maybe, custom fields MUST also use Yes/No/Maybe (not 0, not Met, not numeric)
-   - If core scores use 1-100, custom fields MUST also use 1-100
-   - If core scores use A/B/C, custom fields MUST also use A/B/C
-5. NEVER use a different format for custom fields than core fields. Every *_score field must match.
-6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
-7. NEVER use "0", "Met", "Partial", "High" if the format is Yes/No/Maybe - use ONLY Yes, No, or Maybe.
+SCORING FORMAT RULES:
+1. Read the SCORING DEFINITIONS above to identify the scoring format (e.g., Yes/No/Maybe, 1-100, A/B/C, Good/Medium/Poor, etc.)
+2. Use that EXACT SAME format for ALL *_score fields — core AND custom. No mixing.
+3. In the "scoring_format" object, list the full ordered scale from worst to best, and specify best/worst values.
+4. Do NOT output "recommendation" — it will be determined separately.
 
-RECOMMENDATION CONSISTENCY RULE (MANDATORY - apply to ALL candidates equally):
-Based on the scoring format you detected, define clear cutoff thresholds for the recommendation field:
-- If scoring is Yes/No/Maybe: All Yes = "Recommended", Mix of Yes/Maybe (with no No) = "Consider", Any No in core OR custom fields = "Pass"
-- If scoring is 1-100: Use thresholds like 75+ = "Recommended", 50-74 = "Consider", <50 = "Pass"
-- If scoring is 1-10: Use thresholds like 8+ = "Recommended", 5-7 = "Consider", <5 = "Pass"
-- If scoring is 1-5: Use thresholds like 4-5 = "Recommended", 3 = "Consider", 1-2 = "Pass"
-- If scoring is percentages: Use thresholds like 75%+ = "Recommended", 50-74% = "Consider", <50% = "Pass"
-- If scoring uses labels (Good/Medium/Poor): Good = "Recommended", Medium = "Consider", Poor = "Pass"
-- If scoring uses letter grades: A/B = "Recommended", C = "Consider", D/F = "Pass"
-
-OVERRIDE RULE: If minimum_requirements = No (or fails), the recommendation is ALWAYS "Pass" regardless of other scores.
-
-CRITICAL: Once you define your thresholds, apply them IDENTICALLY to every candidate. Same scores = same recommendation. No exceptions.
-
-EVALUATION FOCUS:
-- Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
-- Focus on job-relevant competencies demonstrated in the resume
-    
 REQUIRED JSON (exact keys/types):
 {schema}
 
@@ -1167,41 +1250,19 @@ Title: {job_title}
 Department: {department}
 Description: {job_description}
 
-RESUME (verbatim evidence source):
+RESUME:
 {resume_text}
 
-CATEGORY INSTRUCTIONS (authoritative; reflect ALL in custom_considerations):
+CUSTOM FIELD INSTRUCTIONS:
 {rules_payload}
 
-EVALUATION RULES (follow ALL):
-1) Apply the scoring format identified from the SCORING DEFINITIONS above to ALL scores
-2) For EACH custom field, you MUST provide ALL THREE: value, score, AND explanation
-   - NEVER leave any custom field score empty or null
-   - Custom field scores MUST use the SAME FORMAT as core scores (e.g., if core uses 1-100, custom fields use 1-100)
-   - MANDATORY: Every custom field MUST have a non-null score value in the correct format
-3) If instruction sets threshold/condition, evaluate how well it's met and express as a score in the detected format
-   - Document this logic in custom_considerations with applied=true and explain the impact
-4) REQUIREMENTS FIELDS RULE (CRITICAL - STRICTLY ENFORCED):
-   - If ANY custom field name contains "requirement" or "qualification" (e.g., "minimum_requirements", "minimum_qualifications"):
-     - Evaluate if the candidate meets the stated requirements
-     - If candidate does NOT meet the requirements:
-       - For Yes/No/Maybe format: If minimum_requirements = No → overall_score MUST be "No" AND recommendation MUST be "Pass"
-       - For numeric formats: If minimum_requirements < 50% of scale → overall_score drops to bottom third AND recommendation MUST be "Pass"
-       - NO EXCEPTIONS: A candidate who fails minimum requirements CANNOT have recommendation = "Consider" or "Recommended"
-     - Document this in custom_considerations with applied=true and explain the disqualifying factor
-5) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
-   - overall_score MUST use the same format as the other scores
-   - If a requirements field triggered a disqualification, overall_score must reflect that penalty
-6) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
-7) overall_explanation should summarize key drivers from subscores (including any disqualifying factors)
-8) Keep all text values concise and avoid special characters, newlines, or control characters
-9) Return ONLY the JSON object
-
-FINAL CONSISTENCY CHECK (do this before outputting):
-- Look at ALL your *_score values: key_strengths_score, experience_score, skills_match_score, overall_score, AND all custom field scores
-- Verify they ALL use the EXACT SAME format (all integers if 1-100 was detected)
-- If you see "Met", "Partial", "High" when format should be numeric, CHANGE them to numbers
-- If you see mixed formats, FIX them to match before outputting"""
+EVALUATION RULES:
+1) Score each field using ONLY the format from SCORING DEFINITIONS — every *_score must use the same format
+2) For each custom field, provide value, score, AND explanation — never leave score empty or null
+3) overall_score should reflect the aggregate of all subscores
+4) Base scores SOLELY on demonstrated skills, experience, and qualifications relevant to the job
+5) Keep text values concise, avoid special characters or newlines in strings
+6) Return ONLY the JSON object"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
@@ -1708,6 +1769,9 @@ FINAL CONSISTENCY CHECK (do this before outputting):
     
                             # Normalize JSON keys before validation (spaces → underscores, lowercase)
                             data = normalize_json_keys(data)
+                            
+                            # Apply deterministic business rules (recommendation, format validation, requirements override)
+                            data = apply_business_rules(data)
                             
                             # Validate with dynamic Pydantic model
                             try:
