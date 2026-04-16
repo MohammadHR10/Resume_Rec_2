@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral
 from pdf_extract import extract_text_from_pdf
-import json, re, zipfile, io, datetime, base64
+import json, re, zipfile, io, datetime, base64, hashlib
 from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
@@ -192,12 +192,43 @@ def _remove_bias_lines(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-def clean_resume_for_extraction(text: str) -> str:
+def _remove_name_from_body(text: str, name: str) -> str:
+    """Remove all occurrences of the candidate's name from body content.
+    Handles full name and individual name parts (first, last)."""
+    if not name or len(name) < 2:
+        return text
+    lines = text.split('\n')
+    cleaned = []
+    name_lower = name.lower()
+    name_parts = [p.lower() for p in name.split() if len(p) > 2]
+    for line in lines:
+        lower = line.lower()
+        if name_lower in lower:
+            cleaned.append('')
+            continue
+        # Also check for individual name parts at word boundaries
+        skip = False
+        for part in name_parts:
+            if part in lower:
+                words_in_line = lower.split()
+                if part in words_in_line:
+                    skip = True
+                    break
+        if skip:
+            cleaned.append('')
+        else:
+            cleaned.append(line)
+    return '\n'.join(cleaned)
+
+
+def clean_resume_for_extraction(text: str, candidate_name: str = "") -> str:
     """Deterministically strip all bias-introducing content from resume text.
     Two resumes with identical professional content but different bias markers
     will produce identical output from this function."""
     text = _strip_header_block(text)
     text = _remove_bias_lines(text)
+    if candidate_name:
+        text = _remove_name_from_body(text, candidate_name)
     return text.strip()
 
 
@@ -276,14 +307,33 @@ def extract_candidate_name(resume_text: str) -> str:
     return ""
 
 
-def extract_evidence(resume_text: str) -> str:
+def _content_hash(text: str) -> str:
+    """Compute a stable hash of cleaned text for cache keying."""
+    normalized = ' '.join(text.lower().split())
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+# Per-batch cache: same cleaned content → same evidence and scores
+_evidence_cache: Dict[str, str] = {}
+_score_cache: Dict[str, dict] = {}
+
+
+def extract_evidence(resume_text: str, candidate_name: str = "") -> str:
     """Strip bias markers deterministically, then structure the clean text via LLM.
-    Two resumes with identical professional content will produce identical evidence."""
-    cleaned_text = clean_resume_for_extraction(resume_text)
+    Caches results by content hash so same-base resume variants get identical evidence."""
+    cleaned_text = clean_resume_for_extraction(resume_text, candidate_name)
+    content_key = _content_hash(cleaned_text)
+
+    if content_key in _evidence_cache:
+        return _evidence_cache[content_key]
+
     prompt = build_extraction_prompt(cleaned_text)
     result = call_mistral(prompt)
     parsed = _parse_llm_json(result)
-    return parsed if parsed else cleaned_text
+    evidence = parsed if parsed else cleaned_text
+
+    _evidence_cache[content_key] = evidence
+    return evidence
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -1819,6 +1869,10 @@ EVALUATION RULES:
             # Initialize anonymization mapping per run
             st.session_state.anonymization_mapping = []
             st.session_state.candidate_index = 0
+
+            # Clear per-batch caches so same-base variants share results
+            _evidence_cache.clear()
+            _score_cache.clear()
     
             with st.spinner("Analyzing resumes with Mistral..."):
                 for resume_filename, file_object in all_resume_files:
@@ -1832,13 +1886,22 @@ EVALUATION RULES:
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
 
                     # Call 1: Extract structured evidence, stripping all bias markers
-                    evidence_text = extract_evidence(resume_text)
+                    # Pass candidate name so it can be stripped from body content too
+                    evidence_text = extract_evidence(resume_text, candidate_name_from_llm)
 
-                    # Call 2: Score the evidence (LLM never sees raw resume)
-                    prompt = build_eval_prompt(
-                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
-                    )
-                    result = call_mistral(prompt)
+                    # Compute evidence hash for score caching
+                    ev_key = _content_hash(evidence_text)
+
+                    if ev_key in _score_cache:
+                        # Same-base variant: reuse cached scores
+                        result = _score_cache[ev_key]
+                    else:
+                        # Call 2: Score the evidence (LLM never sees raw resume)
+                        prompt = build_eval_prompt(
+                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                        )
+                        result = call_mistral(prompt)
+                        _score_cache[ev_key] = result
     
                     st.markdown(f"### 📄 {resume_filename}")
                     if isinstance(result, dict) and "choices" in result:
