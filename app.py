@@ -1174,12 +1174,20 @@ EVALUATION RULES (follow ALL):
    - MANDATORY: Every custom field MUST have a non-null score value in the correct format
 3) If instruction sets threshold/condition, evaluate how well it's met and express as a score in the detected format
    - Document this logic in custom_considerations with applied=true and explain the impact
-4) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
+4) REQUIREMENTS FIELDS RULE (CRITICAL):
+   - If ANY custom field name contains "requirement" or "qualification" (e.g., "minimum_requirements", "minimum_qualifications"):
+     - Evaluate if the candidate meets the stated requirements
+     - If candidate does NOT meet the requirements (score below 50% of scale, or fails key criteria):
+       - The overall_score MUST be penalized significantly (drop to lower third of scale)
+       - The recommendation MUST be "Pass"
+     - Document this in custom_considerations with applied=true and explain the disqualifying factor
+5) Calculate overall_score considering ALL individual scores (core + custom) and their relative importance
    - overall_score MUST use the same format as the other scores
-5) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
-6) overall_explanation should summarize key drivers from subscores
-7) Keep all text values concise and avoid special characters, newlines, or control characters
-8) Return ONLY the JSON object
+   - If a requirements field triggered a disqualification, overall_score must reflect that penalty
+6) Base scores SOLELY on demonstrated skills, experience, projects, and qualifications relevant to the job
+7) overall_explanation should summarize key drivers from subscores (including any disqualifying factors)
+8) Keep all text values concise and avoid special characters, newlines, or control characters
+9) Return ONLY the JSON object
 
 FINAL CONSISTENCY CHECK (do this before outputting):
 - Look at ALL your *_score values: key_strengths_score, experience_score, skills_match_score, overall_score, AND all custom field scores
