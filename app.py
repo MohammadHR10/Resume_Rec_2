@@ -137,17 +137,16 @@ _PROFESSIONAL_HEADERS = {
     'career objective', 'profile', 'about', 'overview',
 }
 
-# Words/phrases that indicate bias-carrying lines within body content
+# Phrases that indicate bias-carrying lines (must be specific enough
+# to avoid stripping legitimate professional content)
 _BIAS_INDICATORS = [
-    'member of', 'active member', 'proud member', 'affiliated with',
+    'proud member of', 'active member of', 'affiliated with',
     'he/him', 'she/her', 'they/them', 'ze/zir',
     'pronouns:', 'pronoun:', 'gender:', 'sex:',
     'nationality:', 'citizenship:', 'national origin:',
-    'religion:', 'religious:', 'faith:',
-    'race:', 'ethnicity:', 'ethnic:',
-    'marital status:', 'married', 'single', 'divorced',
-    'date of birth', 'dob:', 'age:',
-    'father', 'mother', 'husband', 'wife',
+    'religion:', 'religious affiliation:', 'faith:',
+    'race:', 'ethnicity:', 'ethnic background:',
+    'marital status:', 'date of birth', 'dob:', 'age:',
 ]
 
 
@@ -239,33 +238,52 @@ RESUME CONTENT:
 {resume_text}"""
 
 
+def _parse_llm_json(result: dict) -> Optional[str]:
+    """Extract and parse JSON from an LLM response, return formatted JSON string or None."""
+    if not (isinstance(result, dict) and "choices" in result):
+        return None
+    raw = result["choices"][0]["message"]["content"]
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        start = cleaned.find('{')
+        end = cleaned.rfind('}') + 1
+        if start != -1 and end > start:
+            facts = json.loads(cleaned[start:end])
+            return json.dumps(facts, indent=2, ensure_ascii=False)
+    except (json.JSONDecodeError, Exception):
+        pass
+    return raw
+
+
+def extract_candidate_name(resume_text: str) -> str:
+    """Use LLM to extract the candidate's full name from raw resume text."""
+    prompt = (
+        "What is the full legal name of the candidate in this resume? "
+        "Return ONLY the name — no quotes, no explanation, no extra text.\n\n"
+        + resume_text[:1000]
+    )
+    result = call_mistral(prompt)
+    if isinstance(result, dict) and "choices" in result:
+        name = result["choices"][0]["message"]["content"].strip()
+        name = name.strip('"').strip("'").strip('.').strip()
+        if 2 <= len(name) <= 80 and '\n' not in name:
+            return name
+    return ""
+
+
 def extract_evidence(resume_text: str) -> str:
     """Strip bias markers deterministically, then structure the clean text via LLM.
     Two resumes with identical professional content will produce identical evidence."""
     cleaned_text = clean_resume_for_extraction(resume_text)
     prompt = build_extraction_prompt(cleaned_text)
     result = call_mistral(prompt)
-
-    if isinstance(result, dict) and "choices" in result:
-        raw = result["choices"][0]["message"]["content"]
-        try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-
-            start = cleaned.find('{')
-            end = cleaned.rfind('}') + 1
-            if start != -1 and end > start:
-                json_str = cleaned[start:end]
-                facts = json.loads(json_str)
-                return json.dumps(facts, indent=2, ensure_ascii=False)
-        except (json.JSONDecodeError, Exception):
-            pass
-        return raw
-    return cleaned_text
+    parsed = _parse_llm_json(result)
+    return parsed if parsed else cleaned_text
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -1806,7 +1824,9 @@ EVALUATION RULES:
                 for resume_filename, file_object in all_resume_files:
                     resume_text = extract_text_from_pdf(file_object)
                     original_text = resume_text
-                    # Extract personal info before evidence extraction (for display/mapping)
+                    # Extract candidate name via LLM from raw text (before any cleaning)
+                    candidate_name_from_llm = extract_candidate_name(original_text)
+                    # Extract personal info for anonymization mapping
                     extracted = extract_personal_info(original_text)
                     # Apply anonymization if enabled (for mapping records)
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
@@ -1942,33 +1962,10 @@ EVALUATION RULES:
                                         data[field_name] = None
                                 evaluation = EvaluationModel.model_construct(**data)
 
-                            # Always use name from extract_personal_info since
-                            # evidence extraction intentionally strips it
-                            real_name = extracted.get("name", "") if extracted else ""
-                            if not real_name:
-                                # Fallback: derive name from PDF filename
-                                base = resume_filename.rsplit('.', 1)[0]
-                                base = base.replace('_', ' ').replace('-', ' ')
-                                # Strip parenthesized content (bias codes like "(be1 R1)")
-                                while '(' in base and ')' in base:
-                                    open_idx = base.index('(')
-                                    close_idx = base.index(')', open_idx)
-                                    base = base[:open_idx] + base[close_idx + 1:]
-                                # Strip leading digits and whitespace
-                                while base and (base[0].isdigit() or base[0] in ' \t'):
-                                    base = base[1:]
-                                # Remove common suffixes
-                                for suffix in ['resume', 'cv', 'final', 'updated', 'v2', 'v3', 'copy']:
-                                    low = base.lower()
-                                    idx = low.find(suffix)
-                                    if idx != -1:
-                                        base = base[:idx] + base[idx + len(suffix):]
-                                # Strip stray punctuation from bias codes
-                                base = base.replace(')', '').replace('(', '')
-                                real_name = ' '.join(w.capitalize() for w in base.split() if w.strip())
-                            if real_name:
+                            # Use LLM-extracted name (from raw resume, before cleaning)
+                            if candidate_name_from_llm:
                                 try:
-                                    evaluation.candidate_name = real_name
+                                    evaluation.candidate_name = candidate_name_from_llm
                                 except Exception:
                                     pass
 
