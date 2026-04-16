@@ -126,6 +126,85 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
     return "Consider"
 
 
+# ---------- Evidence extraction (bias-free fact extraction) ----------
+def build_extraction_prompt(resume_text: str) -> str:
+    """Build prompt that extracts only factual professional content from a resume,
+    stripping all bias-introducing information."""
+    return f"""You are a structured data extractor. Extract ONLY professional and academic facts from the resume below.
+
+STRICT EXCLUSION RULES — do NOT include any of the following:
+- Candidate name or any variation of it
+- Gender pronouns (he/him, she/her, they/them) or gender-related statements
+- Marital or family status (married, mother, father, parent, etc.)
+- Religious affiliations or memberships (e.g., "Member of [any religious org]")
+- Racial or ethnic affiliations or memberships (e.g., "Member of [any racial/ethnic org]")
+- Nationality, citizenship, or immigration status
+- Age or date of birth
+- Physical descriptions
+- Any organizational membership that is not directly professional/technical
+- Bias codes or tags (e.g., "BG1/G1", "BE1/R1", "BS2/RA2")
+
+INCLUDE ONLY:
+- Education (degree, field, university, graduation year, GPA, relevant coursework)
+- Technical skills (languages, frameworks, databases, tools, platforms)
+- Work experience (company name, job title, duration, technical achievements with metrics)
+- Projects (project name, description, tech stack, measurable outcomes)
+- Certifications and professional licenses
+- Core competencies that are technical or professional in nature
+
+Return STRICT JSON only — no prose, no markdown fences. Use this exact structure:
+{{
+  "education": [
+    {{"degree": "", "field": "", "university": "", "year": "", "gpa": "", "coursework": []}}
+  ],
+  "technical_skills": {{
+    "languages": [],
+    "frameworks": [],
+    "databases": [],
+    "tools_devops": [],
+    "core_competencies": []
+  }},
+  "work_experience": [
+    {{"company": "", "title": "", "duration": "", "achievements": []}}
+  ],
+  "projects": [
+    {{"name": "", "description": "", "tech_stack": [], "metrics": []}}
+  ],
+  "certifications": []
+}}
+
+RESUME TEXT:
+{resume_text}"""
+
+
+def extract_evidence(resume_text: str) -> str:
+    """Call LLM to extract structured facts from resume, stripping all bias markers.
+    Returns a formatted string of the evidence for the scoring prompt."""
+    prompt = build_extraction_prompt(resume_text)
+    result = call_mistral(prompt)
+
+    if isinstance(result, dict) and "choices" in result:
+        raw = result["choices"][0]["message"]["content"]
+        try:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+
+            start = cleaned.find('{')
+            end = cleaned.rfind('}') + 1
+            if start != -1 and end > start:
+                json_str = cleaned[start:end]
+                facts = json.loads(json_str)
+                return json.dumps(facts, indent=2, ensure_ascii=False)
+        except (json.JSONDecodeError, Exception):
+            pass
+        return raw
+    return resume_text
+
+
 # ---------- LLM-based field extraction for anonymization ----------
 def extract_fields_with_llm(text: str, fields: List[str]) -> Dict[str, List[str]]:
     """Use LLM to dynamically extract bias-related content from resume text.
@@ -1210,16 +1289,14 @@ with tab1:
         department: str,
         job_description: str,
         custom_fields: list,
-        resume_text: str
+        evidence_text: str
     ) -> str:
         schema = schema_text(job_title, department, job_description, custom_fields)
-        # Normalize field names in rules payload to match schema (spaces → underscores)
         rules_payload = json.dumps(
             [{"field": f["name"].strip().replace(' ', '_').lower(), "instruction": f.get("instruction", "")} for f in custom_fields],
             ensure_ascii=False
         )
         
-        # Get custom core criteria definitions if they exist, otherwise use defaults
         if 'core_criteria_defs' in st.session_state:
             key_strengths_def = st.session_state.core_criteria_defs['key_strengths']['definition']
             experience_def = st.session_state.core_criteria_defs['experience']['definition']
@@ -1230,6 +1307,8 @@ with tab1:
             skills_match_def = "Evaluate skills_match for technical/functional skill alignment."
     
         return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
+
+The candidate's qualifications are provided below as STRUCTURED EVIDENCE — pre-extracted professional facts with all personal/demographic information already removed. Evaluate ONLY on the evidence provided.
 
 SCORING DEFINITIONS (identify the scoring format from these):
 - Key Strengths: {key_strengths_def}
@@ -1250,8 +1329,8 @@ Title: {job_title}
 Department: {department}
 Description: {job_description}
 
-RESUME:
-{resume_text}
+CANDIDATE EVIDENCE:
+{evidence_text}
 
 CUSTOM FIELD INSTRUCTIONS:
 {rules_payload}
@@ -1260,7 +1339,7 @@ EVALUATION RULES:
 1) Score each field using ONLY the format from SCORING DEFINITIONS — every *_score must use the same format
 2) For each custom field, provide value, score, AND explanation — never leave score empty or null
 3) overall_score should reflect the aggregate of all subscores
-4) Base scores SOLELY on demonstrated skills, experience, and qualifications relevant to the job
+4) Base scores SOLELY on demonstrated skills, experience, and qualifications in the CANDIDATE EVIDENCE
 5) Keep text values concise, avoid special characters or newlines in strings
 6) Return ONLY the JSON object"""
     
@@ -1654,13 +1733,17 @@ EVALUATION RULES:
                 for resume_filename, file_object in all_resume_files:
                     resume_text = extract_text_from_pdf(file_object)
                     original_text = resume_text
-                    # Extract personal info prior to anonymization (for mapping)
+                    # Extract personal info before evidence extraction (for display/mapping)
                     extracted = extract_personal_info(original_text)
-                    # Apply anonymization before prompting
+                    # Apply anonymization if enabled (for mapping records)
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
-                    resume_text = anonymized_text
+
+                    # Call 1: Extract structured evidence, stripping all bias markers
+                    evidence_text = extract_evidence(resume_text)
+
+                    # Call 2: Score the evidence (LLM never sees raw resume)
                     prompt = build_eval_prompt(
-                        job_title, department, job_description, st.session_state.custom_fields, resume_text
+                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
                     )
                     result = call_mistral(prompt)
     
