@@ -204,7 +204,7 @@ def clean_resume_for_extraction(text: str) -> str:
 
 def build_extraction_prompt(resume_text: str) -> str:
     """Build prompt that structures pre-cleaned resume text into JSON."""
-    return f"""You are a structured data extractor. Convert the professional content below into structured JSON.
+    return f"""You are a structured data extractor. Convert ALL professional content below into structured JSON. Capture everything that could be relevant to evaluating a job candidate.
 
 Return STRICT JSON only — no prose, no markdown fences. Use this exact structure:
 {{
@@ -224,8 +224,16 @@ Return STRICT JSON only — no prose, no markdown fences. Use this exact structu
   "projects": [
     {{"name": "", "description": "", "tech_stack": [], "metrics": []}}
   ],
-  "certifications": []
+  "certifications": [],
+  "volunteering": [
+    {{"organization": "", "role": "", "duration": "", "contributions": []}}
+  ],
+  "leadership": [],
+  "awards": [],
+  "additional_relevant": []
 }}
+
+Include ALL content from the resume — volunteering, leadership roles, awards, publications, community involvement, and anything else that demonstrates the candidate's capabilities. Put anything that does not fit neatly into the above categories into "additional_relevant".
 
 RESUME CONTENT:
 {resume_text}"""
@@ -733,7 +741,11 @@ SECTION_HEADERS = {
     'resume', 'curriculum vitae', 'cv', 'summary', 'objective', 'profile',
     'experience', 'education', 'skills', 'projects', 'certifications',
     'references', 'contact', 'professional summary', 'work experience',
-    'technical skills', 'qualifications', 'achievements', 'publications'
+    'technical skills', 'qualifications', 'achievements', 'publications',
+    'executive summary', 'career summary', 'career objective',
+    'personal statement', 'about me', 'about', 'overview',
+    'volunteer experience', 'volunteering', 'leadership',
+    'interests', 'hobbies', 'activities', 'awards', 'honors',
 }
 
 NOISE_WORDS = {
@@ -1927,6 +1939,14 @@ EVALUATION RULES:
                             # Always use name from extract_personal_info since
                             # evidence extraction intentionally strips it
                             real_name = extracted.get("name", "") if extracted else ""
+                            if not real_name:
+                                # Fallback: derive name from PDF filename
+                                base = resume_filename.rsplit('.', 1)[0]
+                                base = base.replace('_', ' ').replace('-', ' ')
+                                # Remove common suffixes like "resume", "cv", "final"
+                                for suffix in ['resume', 'cv', 'final', 'updated', 'v2', 'v3', 'copy']:
+                                    base = base.lower().replace(suffix, '')
+                                real_name = ' '.join(w.capitalize() for w in base.split() if w)
                             if real_name:
                                 try:
                                     evaluation.candidate_name = real_name
