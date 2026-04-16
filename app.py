@@ -1138,6 +1138,16 @@ MANDATORY SCORING CONSISTENCY RULE (CRITICAL - FOLLOW EXACTLY):
 6. NEVER add suffixes like "/5", "/100", "out of 5" after scores.
 7. NEVER use "High", "Partial", "Full" for scores - use the detected numeric format.
 
+RECOMMENDATION CONSISTENCY RULE (MANDATORY - apply to ALL candidates equally):
+Based on the scoring format you detected, define clear cutoff thresholds for the recommendation field:
+- If scoring is 1-100: Use thresholds like 75+ = "Recommended", 50-74 = "Consider", <50 = "Pass"
+- If scoring is 1-10: Use thresholds like 8+ = "Recommended", 5-7 = "Consider", <5 = "Pass"
+- If scoring is 1-5: Use thresholds like 4-5 = "Recommended", 3 = "Consider", 1-2 = "Pass"
+- If scoring is percentages: Use thresholds like 75%+ = "Recommended", 50-74% = "Consider", <50% = "Pass"
+- If scoring uses labels (Good/Medium/Poor): Good = "Recommended", Medium = "Consider", Poor = "Pass"
+- If scoring uses letter grades: A/B = "Recommended", C = "Consider", D/F = "Pass"
+CRITICAL: Once you define your thresholds, apply them IDENTICALLY to every candidate. If Candidate A gets overall_score=75 and is "Recommended", then Candidate B with overall_score=75 MUST also be "Recommended". No exceptions.
+
 EVALUATION FOCUS:
 - Evaluate technical skills, work experience, projects, education relevance, and job-specific qualifications
 - Focus on job-relevant competencies demonstrated in the resume
