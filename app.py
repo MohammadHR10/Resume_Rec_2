@@ -1869,15 +1869,14 @@ EVALUATION RULES:
                                         data[field_name] = None
                                 evaluation = EvaluationModel.model_construct(**data)
 
-                            # If LLM couldn't extract the real name, fill it from PII extraction
-                            eval_name = getattr(evaluation, 'candidate_name', "") or ""
-                            if not eval_name or eval_name.strip().lower() == "candidate":
-                                real_name = extracted.get("name", "") if extracted else ""
-                                if real_name:
-                                    try:
-                                        evaluation.candidate_name = real_name
-                                    except Exception:
-                                        pass
+                            # Always use name from extract_personal_info since
+                            # evidence extraction intentionally strips it
+                            real_name = extracted.get("name", "") if extracted else ""
+                            if real_name:
+                                try:
+                                    evaluation.candidate_name = real_name
+                                except Exception:
+                                    pass
 
                             # If any field is anonymized, capture the mapping
                             anonymize_list = [c.strip().lower() for c in st.session_state.get('anonymize_fields', [])]
