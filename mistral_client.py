@@ -4,15 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Use internal LLM Gateway instead of Mistral API
 api_key = os.getenv("LLM_GATEWAY_KEY")
 API_URL = os.getenv("LLM_GATEWAY_URL", "http://litellma01.tkg.utshare.internal:4000/v1/chat/completions")
 MODEL = os.getenv("LLM_MODEL", "llama-3.2-90b-vision-instruct")
+MODEL_CALIBRATOR = os.getenv("LLM_CALIBRATOR_MODEL", "GPT 120b")
 
-# Hardcoded seed for deterministic/repeatable outputs
 SEED = 42
 
-# HiddenLayer guardrail headers — routes to the Resume Modeler project policy
 HL_PROJECT_ID = os.getenv("HL_PROJECT_ID", "")
 HL_REQUESTER_ID = os.getenv("HL_REQUESTER_ID", "resume-modeler")
 
@@ -26,18 +24,13 @@ if HL_PROJECT_ID:
 if HL_REQUESTER_ID:
     headers["hl-requester-id"] = HL_REQUESTER_ID
 
-def call_mistral(prompt):
-    """
-    Call the internal LLM Gateway for completions.
-    Using the model specified in .env (default: llama-3.2-90b-vision-instruct)
-    
-    Uses a hardcoded seed (42) for deterministic/repeatable outputs.
-    Same prompt will always produce the same response.
-    """
+
+def call_mistral(prompt, model=None):
+    """Call the LLM Gateway. Uses MODEL by default, pass model= to override."""
     payload = {
-        "model": MODEL,
+        "model": model or MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "seed": SEED  # Always use hardcoded seed for repeatability
+        "seed": SEED
     }
 
     response = requests.post(API_URL, headers=headers, json=payload)
@@ -53,3 +46,8 @@ def call_mistral(prompt):
             "status_code": response.status_code,
             "raw": response.text
         }
+
+
+def call_calibrator(prompt):
+    """Call the calibrator model (GPT 120b by default) for batch comparison."""
+    return call_mistral(prompt, model=MODEL_CALIBRATOR)

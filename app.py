@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple, Type, Literal, Union
 from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
-from mistral_client import call_mistral
+from mistral_client import call_mistral, call_calibrator
 from pdf_extract import extract_text_from_pdf
 import json, re, zipfile, io, datetime, base64, hashlib
 from pathlib import Path
@@ -124,6 +124,87 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
         return "Pass"
 
     return "Consider"
+
+
+# ---------- Batch calibration (cross-candidate consistency) ----------
+
+def calibrate_batch_scores(batch: list, scoring_format: dict) -> list:
+    """Send all candidates' evidence + scores to the calibrator model (GPT 120b)
+    for cross-candidate comparison. The calibrator sees everyone side by side
+    and equalizes scores where qualifications are equivalent but scores differ.
+
+    Args:
+        batch: list of dicts with keys 'candidate_name', 'evidence', 'scores'
+        scoring_format: dict with 'scale', 'best', 'worst' from the scorer
+
+    Returns:
+        list of corrected score dicts (same order as input)
+    """
+    if not batch or len(batch) < 2:
+        return [entry['scores'] for entry in batch]
+
+    scale_info = json.dumps(scoring_format, ensure_ascii=False)
+
+    # Build a condensed summary for each candidate
+    candidate_summaries = []
+    for i, entry in enumerate(batch):
+        scores_str = json.dumps(entry['scores'], indent=2, ensure_ascii=False)
+        evidence_str = entry['evidence']
+        # Truncate evidence to keep prompt within context limits
+        if len(evidence_str) > 800:
+            evidence_str = evidence_str[:800] + "..."
+        candidate_summaries.append(
+            f"--- CANDIDATE {i+1} ---\n"
+            f"QUALIFICATIONS:\n{evidence_str}\n\n"
+            f"CURRENT SCORES:\n{scores_str}"
+        )
+
+    all_candidates = "\n\n".join(candidate_summaries)
+
+    prompt = f"""You are a calibration auditor for a fair-hiring system. Below are {len(batch)} candidates who were scored INDEPENDENTLY by another model. Your job is to review all scores as a group and fix inconsistencies.
+
+SCORING FORMAT IN USE: {scale_info}
+
+WHAT TO CHECK:
+1. If two candidates have equivalent or very similar qualifications but received different scores, EQUALIZE them — give them the same scores.
+2. If a candidate's score seems too high or too low relative to others with similar qualifications, ADJUST it.
+3. Do NOT change scores that are already fair and consistent.
+4. The scoring format must stay the same (use the exact scale values shown above).
+5. Do NOT let candidate names, gender, ethnicity, religion, or any non-professional attribute influence your calibration. Judge ONLY on the qualifications shown.
+
+{all_candidates}
+
+RESPONSE FORMAT:
+Return STRICT JSON only — no prose, no markdown fences. Return an array with exactly {len(batch)} objects, one per candidate in order.
+Each object must have exactly these keys matching the candidate's score fields. Copy the same field names from CURRENT SCORES above, but with your corrected values.
+
+Return ONLY the JSON array."""
+
+    result = call_calibrator(prompt)
+
+    if not (isinstance(result, dict) and "choices" in result):
+        return [entry['scores'] for entry in batch]
+
+    raw = result["choices"][0]["message"]["content"]
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        start = cleaned.find('[')
+        end = cleaned.rfind(']') + 1
+        if start != -1 and end > start:
+            calibrated = json.loads(cleaned[start:end])
+            if isinstance(calibrated, list) and len(calibrated) == len(batch):
+                return calibrated
+
+    except (json.JSONDecodeError, Exception):
+        pass
+
+    return [entry['scores'] for entry in batch]
 
 
 # ---------- Evidence extraction (bias-free fact extraction) ----------
@@ -1776,6 +1857,10 @@ EVALUATION RULES:
 
             # Clear per-batch score cache
             _score_cache.clear()
+
+            # Calibration: collect evidence + scores for cross-candidate comparison
+            calibration_batch = []
+            batch_scoring_format = {}
     
             with st.spinner("Analyzing resumes with Mistral..."):
                 for resume_filename, file_object in all_resume_files:
@@ -2038,13 +2123,24 @@ EVALUATION RULES:
                                 st.caption(f"💭 {evaluation.overall_explanation}")
                                 
                             # Store successful evaluation for Excel export
-                            # Create a dictionary to store evaluation with metadata instead of modifying the model directly
                             eval_with_metadata = {
                                 "evaluation": evaluation,
                                 "custom_fields": st.session_state.custom_fields,
                                 "resume_filename": resume_filename
                             }
                             st.session_state.evaluations.append(eval_with_metadata)
+
+                            # Collect data for batch calibration
+                            score_fields = {k: v for k, v in data.items() if k.endswith("_score")}
+                            score_fields["recommendation"] = data.get("recommendation", "")
+                            sf = data.get("scoring_format") or {}
+                            if sf and not batch_scoring_format:
+                                batch_scoring_format = sf
+                            calibration_batch.append({
+                                "candidate_name": getattr(evaluation, "candidate_name", "Unknown"),
+                                "evidence": evidence_text,
+                                "scores": score_fields
+                            })
     
                         except (ValueError, ValidationError) as e:
                             st.error(f"❌ Failed to validate evaluation: {str(e)}")
@@ -2057,6 +2153,33 @@ EVALUATION RULES:
                     else:
                         st.error("❌ Failed to get response from Mistral.")
                         
+            # ---------- BATCH CALIBRATION (GPT 120b cross-candidate comparison) ----------
+            if len(calibration_batch) >= 2:
+                with st.spinner("Running batch calibration (GPT 120b) — comparing all candidates side by side..."):
+                    calibrated_scores = calibrate_batch_scores(calibration_batch, batch_scoring_format)
+
+                # Apply calibrated scores back to evaluations
+                changes_made = 0
+                for idx, corrected in enumerate(calibrated_scores):
+                    if idx >= len(st.session_state.evaluations):
+                        break
+                    eval_obj = st.session_state.evaluations[idx]["evaluation"]
+                    original_scores = calibration_batch[idx]["scores"]
+
+                    for field, new_val in corrected.items():
+                        old_val = original_scores.get(field)
+                        if str(new_val) != str(old_val):
+                            changes_made += 1
+                            try:
+                                setattr(eval_obj, field, new_val)
+                            except Exception:
+                                pass
+
+                if changes_made > 0:
+                    st.success(f"Calibration adjusted {changes_made} score(s) across {len(calibration_batch)} candidates for consistency.")
+                else:
+                    st.info("Calibration confirmed all scores are already consistent — no changes needed.")
+
             # After all evaluations, offer Excel download if we have results
             if st.session_state.evaluations:
                 st.divider()
