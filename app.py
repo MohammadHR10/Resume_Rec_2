@@ -92,9 +92,9 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
         if total_range == 0:
             return "Consider"
         ratio = (num_overall - num_worst) / total_range
-        if ratio >= 0.75:
+        if ratio >= 0.73:
             return "Recommended"
-        elif ratio >= 0.45:
+        elif ratio >= 0.43:
             return "Consider"
         else:
             return "Pass"
@@ -128,14 +128,19 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
 
 # ---------- Batch calibration (cross-candidate consistency) ----------
 
-def calibrate_batch_scores(batch: list, scoring_format: dict) -> list:
-    """Send all candidates' evidence + scores to the calibrator model (GPT 120b)
-    for cross-candidate comparison. The calibrator sees everyone side by side
-    and equalizes scores where qualifications are equivalent but scores differ.
+def calibrate_batch_scores(batch: list, scoring_format: dict,
+                           job_title: str = "", job_description: str = "",
+                           custom_fields: list = None) -> list:
+    """Send all candidates' evidence, scores, explanations, and concerns to
+    the calibrator model (GPT 120b) for cross-candidate comparison.
 
     Args:
-        batch: list of dicts with keys 'candidate_name', 'evidence', 'scores'
+        batch: list of dicts with keys 'candidate_name', 'evidence', 'scores',
+               'explanations', 'concerns'
         scoring_format: dict with 'scale', 'best', 'worst' from the scorer
+        job_title: the job being evaluated for
+        job_description: full job description text
+        custom_fields: list of custom field definitions
 
     Returns:
         list of corrected score dicts (same order as input)
@@ -145,32 +150,61 @@ def calibrate_batch_scores(batch: list, scoring_format: dict) -> list:
 
     scale_info = json.dumps(scoring_format, ensure_ascii=False)
 
-    # Build a condensed summary for each candidate
+    custom_fields_desc = ""
+    if custom_fields:
+        cf_lines = []
+        for f in custom_fields:
+            fname = f['name'].strip().replace(' ', '_').lower()
+            cf_lines.append(f"- {fname}: {f.get('instruction', 'N/A')}")
+        custom_fields_desc = "\n".join(cf_lines)
+
     candidate_summaries = []
     for i, entry in enumerate(batch):
         scores_str = json.dumps(entry['scores'], indent=2, ensure_ascii=False)
-        evidence_str = entry['evidence']
-        # Truncate evidence to keep prompt within context limits
-        if len(evidence_str) > 800:
-            evidence_str = evidence_str[:800] + "..."
+        evidence_str = entry.get('evidence', '')
+        explanations = entry.get('explanations', {})
+        concerns = entry.get('concerns', [])
+
+        expl_str = json.dumps(explanations, indent=2, ensure_ascii=False) if explanations else "None"
+        concerns_str = ", ".join(concerns) if concerns else "None"
+
         candidate_summaries.append(
             f"--- CANDIDATE {i+1} ---\n"
             f"QUALIFICATIONS:\n{evidence_str}\n\n"
-            f"CURRENT SCORES:\n{scores_str}"
+            f"CURRENT SCORES:\n{scores_str}\n\n"
+            f"SCORE REASONING:\n{expl_str}\n\n"
+            f"POTENTIAL CONCERNS: {concerns_str}"
         )
 
     all_candidates = "\n\n".join(candidate_summaries)
 
-    prompt = f"""You are a calibration auditor for a fair-hiring system. Below are {len(batch)} candidates who were scored INDEPENDENTLY by another model. Your job is to review all scores as a group and fix inconsistencies.
+    jd_section = ""
+    if job_title or job_description:
+        jd_section = f"""
+JOB BEING EVALUATED:
+Title: {job_title}
+Description: {job_description[:1500] if job_description else 'N/A'}
+"""
 
+    cf_section = ""
+    if custom_fields_desc:
+        cf_section = f"""
+CUSTOM EVALUATION FIELDS AND THEIR DEFINITIONS:
+{custom_fields_desc}
+"""
+
+    prompt = f"""You are a calibration auditor for a fair-hiring system. Below are {len(batch)} candidates who were scored INDEPENDENTLY by another model. Your job is to review all scores as a group and fix inconsistencies.
+{jd_section}{cf_section}
 SCORING FORMAT IN USE: {scale_info}
 
 WHAT TO CHECK:
 1. If two candidates have equivalent or very similar qualifications but received different scores, EQUALIZE them — give them the same scores.
-2. If a candidate's score seems too high or too low relative to others with similar qualifications, ADJUST it.
-3. Do NOT change scores that are already fair and consistent.
-4. The scoring format must stay the same (use the exact scale values shown above).
-5. Do NOT let candidate names, gender, ethnicity, religion, or any non-professional attribute influence your calibration. Judge ONLY on the qualifications shown.
+2. If a candidate's score seems too high relative to their actual qualifications, concerns, or weaknesses, LOWER it.
+3. If a candidate's score seems too low relative to their actual qualifications, RAISE it.
+4. Check that custom field scores align with their definitions above — if a field measures something specific, make sure the score reflects the evidence.
+5. The scoring format must stay the same (use the exact scale values shown above).
+6. Do NOT let candidate names, gender, ethnicity, religion, or any non-professional attribute influence your calibration. Judge ONLY on qualifications, concerns, and reasoning shown.
+7. If the recommendation does not match the overall score (e.g., same score but different recommendation), fix the recommendation to be consistent.
 
 {all_candidates}
 
@@ -2136,10 +2170,16 @@ EVALUATION RULES:
                             sf = data.get("scoring_format") or {}
                             if sf and not batch_scoring_format:
                                 batch_scoring_format = sf
+
+                            explanations = {k: v for k, v in data.items() if k.endswith("_explanation")}
+                            concerns = data.get("potential_concerns", [])
+
                             calibration_batch.append({
                                 "candidate_name": getattr(evaluation, "candidate_name", "Unknown"),
                                 "evidence": evidence_text,
-                                "scores": score_fields
+                                "scores": score_fields,
+                                "explanations": explanations,
+                                "concerns": concerns
                             })
     
                         except (ValueError, ValidationError) as e:
@@ -2156,7 +2196,11 @@ EVALUATION RULES:
             # ---------- BATCH CALIBRATION (GPT 120b cross-candidate comparison) ----------
             if len(calibration_batch) >= 2:
                 with st.spinner("Running batch calibration (GPT 120b) — comparing all candidates side by side..."):
-                    calibrated_scores = calibrate_batch_scores(calibration_batch, batch_scoring_format)
+                    calibrated_scores = calibrate_batch_scores(
+                        calibration_batch, batch_scoring_format,
+                        job_title=job_title, job_description=job_description,
+                        custom_fields=st.session_state.custom_fields
+                    )
 
                 # Apply calibrated scores back to evaluations
                 changes_made = 0
