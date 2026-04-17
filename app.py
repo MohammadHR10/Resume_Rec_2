@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Tuple, Type, Literal, Union
+from typing import List, Dict, Any, Optional, Tuple, Type, Union
 from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral, call_calibrator
@@ -13,11 +13,11 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # ---------- Post-processing: deterministic business rules ----------
 def apply_business_rules(data: dict) -> dict:
     """Apply deterministic business rules AFTER LLM returns scores.
-    
-    Uses the LLM-provided scoring_format metadata to:
-    1. Validate all scores use the same format
-    2. Determine recommendation based on overall_score
-    3. Override recommendation to "Pass" if minimum requirements fail
+
+    The LLM decides the recommendation itself (it understands whatever scoring
+    format is in use). This function only:
+    1. Validates all scores use the same format
+    2. Overrides recommendation to "Pass" if minimum requirements fail
     """
     sf = data.get("scoring_format") or {}
     scale = sf.get("scale", [])
@@ -28,13 +28,11 @@ def apply_business_rules(data: dict) -> dict:
     score_values = {k: data[k] for k in score_fields if data.get(k) is not None}
 
     # --- Step 1: Format validation ---
-    # If we have a scale, ensure every score is in it
     if scale:
         scale_lower = [str(v).lower() for v in scale]
         for field, val in score_values.items():
             val_lower = str(val).lower()
             if val_lower not in scale_lower:
-                # Try numeric: if scale is numeric, check range
                 try:
                     num_val = float(val)
                     num_scale = [float(s) for s in scale]
@@ -42,19 +40,12 @@ def apply_business_rules(data: dict) -> dict:
                         continue
                 except (ValueError, TypeError):
                     pass
-                # Score not in scale — find closest match
                 for s in scale:
                     if str(s).lower() == val_lower:
                         data[field] = s
                         break
 
-    # --- Step 2: Determine recommendation from overall_score ---
-    overall = data.get("overall_score")
-    if overall is not None and best is not None and worst is not None:
-        recommendation = _compute_recommendation(overall, scale, best, worst)
-        data["recommendation"] = recommendation
-
-    # --- Step 3: Requirements override ---
+    # --- Step 2: Requirements override ---
     # If any field named *requirement* or *qualification* has the worst score, force Pass
     for field, val in score_values.items():
         field_lower = field.lower()
@@ -62,10 +53,8 @@ def apply_business_rules(data: dict) -> dict:
         if is_requirement and worst is not None:
             if str(val).lower() == str(worst).lower():
                 data["recommendation"] = "Pass"
-                # Also set overall to worst
                 data["overall_score"] = worst
                 break
-            # For numeric scales
             try:
                 num_val = float(val)
                 num_worst = float(worst)
@@ -79,51 +68,6 @@ def apply_business_rules(data: dict) -> dict:
                 pass
 
     return data
-
-
-def _compute_recommendation(overall, scale: list, best, worst) -> str:
-    """Map overall_score to Recommended/Consider/Pass using the LLM-declared scale."""
-    # Try numeric comparison first
-    try:
-        num_overall = float(overall)
-        num_best = float(best)
-        num_worst = float(worst)
-        total_range = num_best - num_worst
-        if total_range == 0:
-            return "Consider"
-        ratio = (num_overall - num_worst) / total_range
-        if ratio >= 0.73:
-            return "Recommended"
-        elif ratio >= 0.43:
-            return "Consider"
-        else:
-            return "Pass"
-    except (ValueError, TypeError):
-        pass
-
-    # Label-based: use position in scale
-    if scale:
-        scale_lower = [str(s).lower() for s in scale]
-        overall_lower = str(overall).lower()
-        if overall_lower in scale_lower:
-            idx = scale_lower.index(overall_lower)
-            total = len(scale_lower)
-            ratio = idx / max(total - 1, 1)
-            if ratio >= 0.75:
-                return "Recommended"
-            elif ratio >= 0.4:
-                return "Consider"
-            else:
-                return "Pass"
-
-    # If best/worst are known, direct comparison
-    overall_lower = str(overall).lower()
-    if overall_lower == str(best).lower():
-        return "Recommended"
-    elif overall_lower == str(worst).lower():
-        return "Pass"
-
-    return "Consider"
 
 
 # ---------- Batch calibration (cross-candidate consistency) ----------
@@ -1033,7 +977,7 @@ BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
     'skills_match_explanation': (str, ...),
 
     'potential_concerns': (List[str], ...),
-    'recommendation': (Literal["Recommended", "Consider", "Pass"], ...),
+    'recommendation': (str, ...),
 
     'candidate_name': (str, ...),
     'job_title': (str, ...),
@@ -1437,6 +1381,7 @@ with tab1:
     
         lines.append('"overall_score": "<score using SAME format as other scores>",')
         lines.append('"overall_explanation": "<1-2 sentences summarizing key drivers from subscores>",')
+        lines.append('"recommendation": "Recommended|Consider|Pass",')
     
         lines.append('"custom_considerations": [')
         lines.append('  { "field": "<field name>", "instruction": "<the HR rule text>", "applied": <true|false>, "impact": "<what changed and effect on overall>" }')
@@ -1479,7 +1424,7 @@ SCORING FORMAT RULES:
 1. Read the SCORING DEFINITIONS above to identify the scoring format (e.g., Yes/No/Maybe, 1-100, A/B/C, Good/Medium/Poor, etc.)
 2. Use that EXACT SAME format for ALL *_score fields — core AND custom. No mixing.
 3. In the "scoring_format" object, list the full ordered scale from worst to best, and specify best/worst values.
-4. Do NOT output "recommendation" — it will be determined separately.
+4. Based on your overall assessment, set "recommendation" to exactly one of: "Recommended" (strong fit), "Consider" (partial fit), or "Pass" (not a fit). This must reflect your scores — if the overall score is high, recommend; if low, pass.
 
 REQUIRED JSON (exact keys/types):
 {schema}
