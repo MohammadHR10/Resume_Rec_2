@@ -128,115 +128,28 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
 
 # ---------- Evidence extraction (bias-free fact extraction) ----------
 
-# Section headers that mark the start of professional content
-_PROFESSIONAL_HEADERS = {
-    'education', 'experience', 'work experience', 'professional experience',
-    'skills', 'technical skills', 'core competencies', 'projects',
-    'certifications', 'qualifications', 'achievements', 'publications',
-    'summary', 'professional summary', 'executive summary', 'objective',
-    'career objective', 'profile', 'about', 'overview',
-}
-
-# Phrases that indicate bias-carrying lines (must be specific enough
-# to avoid stripping legitimate professional content)
-_BIAS_INDICATORS = [
-    'proud member of', 'active member of', 'affiliated with',
-    'he/him', 'she/her', 'they/them', 'ze/zir',
-    'pronouns:', 'pronoun:', 'gender:', 'sex:',
-    'nationality:', 'citizenship:', 'national origin:',
-    'religion:', 'religious affiliation:', 'faith:',
-    'race:', 'ethnicity:', 'ethnic background:',
-    'marital status:', 'date of birth', 'dob:', 'age:',
-]
-
-
-def _strip_header_block(text: str) -> str:
-    """Remove the personal header block (name, contact info, pronouns, etc.)
-    by finding the first professional section header and keeping everything from there."""
-    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-
-    for i, line in enumerate(lines):
-        stripped = line.strip().lower()
-        # Remove trailing colons/dashes for matching (e.g., "Education:" → "education")
-        cleaned = stripped.rstrip(':').rstrip('-').rstrip('–').strip()
-        if cleaned in _PROFESSIONAL_HEADERS:
-            return '\n'.join(lines[i:])
-
-    # If no section header found, skip the first 8 lines (typical header block)
-    return '\n'.join(lines[8:]) if len(lines) > 8 else text
-
-
-def _remove_bias_lines(text: str) -> str:
-    """Remove individual lines that carry bias indicators from body content."""
-    lines = text.split('\n')
-    cleaned = []
-    for line in lines:
-        lower = line.strip().lower()
-        if not lower:
-            cleaned.append(line)
-            continue
-
-        # Skip lines that are just bias codes (short, uppercase+digits with slashes)
-        if len(lower) < 15 and '/' in lower:
-            parts = lower.split('/')
-            if all(len(p) <= 5 for p in parts):
-                alpha_digit = sum(1 for c in lower if c.isalnum() or c == '/')
-                if alpha_digit / max(len(lower), 1) > 0.8:
-                    continue
-
-        # Skip lines containing bias indicator phrases
-        if any(indicator in lower for indicator in _BIAS_INDICATORS):
-            continue
-
-        cleaned.append(line)
-    return '\n'.join(cleaned)
-
-
-def _remove_name_from_body(text: str, name: str) -> str:
-    """Remove all occurrences of the candidate's name from body content.
-    Handles full name and individual name parts (first, last)."""
-    if not name or len(name) < 2:
-        return text
-    lines = text.split('\n')
-    cleaned = []
-    name_lower = name.lower()
-    name_parts = [p.lower() for p in name.split() if len(p) > 2]
-    for line in lines:
-        lower = line.lower()
-        if name_lower in lower:
-            cleaned.append('')
-            continue
-        # Also check for individual name parts at word boundaries
-        skip = False
-        for part in name_parts:
-            if part in lower:
-                words_in_line = lower.split()
-                if part in words_in_line:
-                    skip = True
-                    break
-        if skip:
-            cleaned.append('')
-        else:
-            cleaned.append(line)
-    return '\n'.join(cleaned)
-
-
-def clean_resume_for_extraction(text: str, candidate_name: str = "") -> str:
-    """Deterministically strip all bias-introducing content from resume text.
-    Two resumes with identical professional content but different bias markers
-    will produce identical output from this function."""
-    text = _strip_header_block(text)
-    text = _remove_bias_lines(text)
-    if candidate_name:
-        text = _remove_name_from_body(text, candidate_name)
-    return text.strip()
-
-
 def build_extraction_prompt(resume_text: str) -> str:
-    """Build prompt that structures pre-cleaned resume text into JSON."""
-    return f"""You are a structured data extractor. Convert ALL professional content below into structured JSON. Capture everything that could be relevant to evaluating a job candidate.
+    """Build prompt that instructs the LLM to critically identify and ignore
+    any content that could introduce bias, extracting only job-relevant facts."""
+    return f"""You are a fair-hiring evidence extractor. Your purpose is to extract ONLY the professional qualifications from a resume so that a separate scoring system can evaluate candidates purely on merit.
 
-Return STRICT JSON only — no prose, no markdown fences. Use this exact structure:
+UNDERSTANDING BIAS IN HIRING:
+Bias in resume evaluation happens when a scorer is influenced — consciously or not — by information that reveals a candidate's identity rather than their ability. This includes but is not limited to:
+- Names, nicknames, or handles that suggest gender, ethnicity, or cultural background
+- Pronouns (he/him, she/her, they/them) or any gendered language
+- Religious, racial, ethnic, or cultural organization memberships that are not directly professional
+- Nationality, citizenship, immigration status, or country of origin
+- Age, date of birth, marital/family status
+- Physical descriptions or disability references
+- Socioeconomic indicators unrelated to professional capability
+- Any codes, tags, or labels that appear to be metadata rather than resume content (e.g., "BG1/G1", "BE1/R1")
+
+YOUR TASK:
+Read the resume below and extract ONLY what demonstrates the candidate's professional capability. Think critically: for each piece of information, ask yourself "Does this tell me about the candidate's ability to do the job, or does it tell me about who they are as a person?" Only include the former.
+
+Two resumes with identical professional experience but different personal characteristics MUST produce identical output from you.
+
+Return STRICT JSON only — no prose, no markdown fences:
 {{
   "education": [
     {{"degree": "", "field": "", "university": "", "year": "", "gpa": "", "coursework": []}}
@@ -263,9 +176,9 @@ Return STRICT JSON only — no prose, no markdown fences. Use this exact structu
   "additional_relevant": []
 }}
 
-Include ALL content from the resume — volunteering, leadership roles, awards, publications, community involvement, and anything else that demonstrates the candidate's capabilities. Put anything that does not fit neatly into the above categories into "additional_relevant".
+When writing achievements, strip any personal references — write "Improved API latency by 40%" not "He improved API latency by 40%". Focus on WHAT was done and the IMPACT, not WHO did it.
 
-RESUME CONTENT:
+RESUME:
 {resume_text}"""
 
 
@@ -313,27 +226,18 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
-# Per-batch cache: same cleaned content → same evidence and scores
-_evidence_cache: Dict[str, str] = {}
+# Per-batch cache: same evidence → same scores
 _score_cache: Dict[str, dict] = {}
 
 
-def extract_evidence(resume_text: str, candidate_name: str = "") -> str:
-    """Strip bias markers deterministically, then structure the clean text via LLM.
-    Caches results by content hash so same-base resume variants get identical evidence."""
-    cleaned_text = clean_resume_for_extraction(resume_text, candidate_name)
-    content_key = _content_hash(cleaned_text)
-
-    if content_key in _evidence_cache:
-        return _evidence_cache[content_key]
-
-    prompt = build_extraction_prompt(cleaned_text)
+def extract_evidence(resume_text: str) -> str:
+    """Send resume to LLM for bias-aware evidence extraction.
+    The LLM critically identifies and ignores all bias-introducing content,
+    returning only job-relevant professional facts."""
+    prompt = build_extraction_prompt(resume_text)
     result = call_mistral(prompt)
     parsed = _parse_llm_json(result)
-    evidence = parsed if parsed else cleaned_text
-
-    _evidence_cache[content_key] = evidence
-    return evidence
+    return parsed if parsed else resume_text
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -1870,30 +1774,29 @@ EVALUATION RULES:
             st.session_state.anonymization_mapping = []
             st.session_state.candidate_index = 0
 
-            # Clear per-batch caches so same-base variants share results
-            _evidence_cache.clear()
+            # Clear per-batch score cache
             _score_cache.clear()
     
             with st.spinner("Analyzing resumes with Mistral..."):
                 for resume_filename, file_object in all_resume_files:
                     resume_text = extract_text_from_pdf(file_object)
                     original_text = resume_text
-                    # Extract candidate name via LLM from raw text (before any cleaning)
+                    # Extract candidate name via LLM from raw text
                     candidate_name_from_llm = extract_candidate_name(original_text)
                     # Extract personal info for anonymization mapping
                     extracted = extract_personal_info(original_text)
                     # Apply anonymization if enabled (for mapping records)
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
 
-                    # Call 1: Extract structured evidence, stripping all bias markers
-                    # Pass candidate name so it can be stripped from body content too
-                    evidence_text = extract_evidence(resume_text, candidate_name_from_llm)
+                    # Call 1: LLM extracts only job-relevant facts,
+                    # critically ignoring all bias-introducing content
+                    evidence_text = extract_evidence(resume_text)
 
-                    # Compute evidence hash for score caching
+                    # Cache scores by evidence hash — if LLM produces
+                    # identical evidence for same-base variants, scores are reused
                     ev_key = _content_hash(evidence_text)
 
                     if ev_key in _score_cache:
-                        # Same-base variant: reuse cached scores
                         result = _score_cache[ev_key]
                     else:
                         # Call 2: Score the evidence (LLM never sees raw resume)
