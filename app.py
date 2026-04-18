@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple, Type, Union
 from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
-from mistral_client import call_mistral, call_calibrator
+from mistral_client import call_mistral, call_second_scorer, call_arbiter
 from pdf_extract import extract_text_from_pdf
 import json, re, zipfile, io, datetime, base64, hashlib
 from pathlib import Path
@@ -72,25 +72,42 @@ def apply_business_rules(data: dict) -> dict:
 
 # ---------- Batch calibration (cross-candidate consistency) ----------
 
-def calibrate_batch_scores(batch: list, scoring_format: dict,
+def _parse_arbiter_response(raw: str, expected_len: int) -> Optional[list]:
+    """Parse the arbiter's JSON array response."""
+    try:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        start = cleaned.find('[')
+        end = cleaned.rfind(']') + 1
+        if start != -1 and end > start:
+            parsed = json.loads(cleaned[start:end])
+            if isinstance(parsed, list) and len(parsed) == expected_len:
+                return parsed
+    except (json.JSONDecodeError, Exception):
+        pass
+    return None
+
+
+def arbiter_final_judgment(batch: list, scoring_format: dict,
                            job_title: str = "", job_description: str = "",
                            custom_fields: list = None) -> list:
-    """Send all candidates' evidence, scores, explanations, and concerns to
-    the calibrator model (GPT 120b) for cross-candidate comparison.
+    """GPT 120b acts as the final arbiter. For each candidate it receives:
+    - The extracted evidence (qualifications)
+    - Model A's scores, explanations, and concerns
+    - Model B's scores, explanations, and concerns
+    It reviews both judgments against the job description and produces
+    the definitive final scores and recommendation for every candidate.
 
-    Args:
-        batch: list of dicts with keys 'candidate_name', 'evidence', 'scores',
-               'explanations', 'concerns'
-        scoring_format: dict with 'scale', 'best', 'worst' from the scorer
-        job_title: the job being evaluated for
-        job_description: full job description text
-        custom_fields: list of custom field definitions
-
-    Returns:
-        list of corrected score dicts (same order as input)
+    Returns list of final score dicts (same order as input).
     """
-    if not batch or len(batch) < 2:
-        return [entry['scores'] for entry in batch]
+    if not batch:
+        return []
+    if len(batch) == 1:
+        return [batch[0].get('scores_a', batch[0].get('scores', {}))]
 
     scale_info = json.dumps(scoring_format, ensure_ascii=False)
 
@@ -104,20 +121,25 @@ def calibrate_batch_scores(batch: list, scoring_format: dict,
 
     candidate_summaries = []
     for i, entry in enumerate(batch):
-        scores_str = json.dumps(entry['scores'], indent=2, ensure_ascii=False)
         evidence_str = entry.get('evidence', '')
-        explanations = entry.get('explanations', {})
-        concerns = entry.get('concerns', [])
 
-        expl_str = json.dumps(explanations, indent=2, ensure_ascii=False) if explanations else "None"
-        concerns_str = ", ".join(concerns) if concerns else "None"
+        scores_a = json.dumps(entry.get('scores_a', {}), indent=2, ensure_ascii=False)
+        expl_a = json.dumps(entry.get('explanations_a', {}), indent=2, ensure_ascii=False)
+        concerns_a = ", ".join(entry.get('concerns_a', [])) or "None"
+
+        scores_b = json.dumps(entry.get('scores_b', {}), indent=2, ensure_ascii=False)
+        expl_b = json.dumps(entry.get('explanations_b', {}), indent=2, ensure_ascii=False)
+        concerns_b = ", ".join(entry.get('concerns_b', [])) or "None"
 
         candidate_summaries.append(
             f"--- CANDIDATE {i+1} ---\n"
             f"QUALIFICATIONS:\n{evidence_str}\n\n"
-            f"CURRENT SCORES:\n{scores_str}\n\n"
-            f"SCORE REASONING:\n{expl_str}\n\n"
-            f"POTENTIAL CONCERNS: {concerns_str}"
+            f"MODEL A SCORES:\n{scores_a}\n"
+            f"MODEL A REASONING:\n{expl_a}\n"
+            f"MODEL A CONCERNS: {concerns_a}\n\n"
+            f"MODEL B SCORES:\n{scores_b}\n"
+            f"MODEL B REASONING:\n{expl_b}\n"
+            f"MODEL B CONCERNS: {concerns_b}"
         )
 
     all_candidates = "\n\n".join(candidate_summaries)
@@ -127,7 +149,7 @@ def calibrate_batch_scores(batch: list, scoring_format: dict,
         jd_section = f"""
 JOB BEING EVALUATED:
 Title: {job_title}
-Description: {job_description[:1500] if job_description else 'N/A'}
+Description: {job_description[:2000] if job_description else 'N/A'}
 """
 
     cf_section = ""
@@ -137,52 +159,39 @@ CUSTOM EVALUATION FIELDS AND THEIR DEFINITIONS:
 {custom_fields_desc}
 """
 
-    prompt = f"""You are a calibration auditor for a fair-hiring system. Below are {len(batch)} candidates who were scored INDEPENDENTLY by another model. Your job is to review all scores as a group and fix inconsistencies.
+    prompt = f"""You are the FINAL ARBITER in a fair-hiring evaluation panel. Two independent scoring models (A and B) have each evaluated {len(batch)} candidates. You now see both models' scores, reasoning, and concerns for every candidate, along with the job requirements and each candidate's qualifications.
+
+Your job: produce the DEFINITIVE final scores for each candidate.
 {jd_section}{cf_section}
 SCORING FORMAT IN USE: {scale_info}
 
-WHAT TO CHECK:
-1. If two candidates have equivalent or very similar qualifications but received different scores, EQUALIZE them — give them the same scores.
-2. If a candidate's score seems too high relative to their actual qualifications, concerns, or weaknesses, LOWER it.
-3. If a candidate's score seems too low relative to their actual qualifications, RAISE it.
-4. Check that custom field scores align with their definitions above — if a field measures something specific, make sure the score reflects the evidence.
-5. The scoring format must stay the same (use the exact scale values shown above).
-6. Do NOT let candidate names, gender, ethnicity, religion, or any non-professional attribute influence your calibration. Judge ONLY on qualifications, concerns, and reasoning shown.
-7. If the recommendation does not match the overall score (e.g., same score but different recommendation), fix the recommendation to be consistent.
+HOW TO DECIDE:
+1. For each candidate, compare Model A and Model B's scores and reasoning. Where they AGREE, that score is likely correct — keep it. Where they DISAGREE, read both explanations and the candidate's qualifications to determine which model's judgment is more accurate.
+2. Check each score against the actual evidence. If a model gave a high score but the qualifications don't support it (or concerns contradict it), adjust downward. If a model underscored despite strong evidence, adjust upward.
+3. Ensure CROSS-CANDIDATE CONSISTENCY: if two candidates have equivalent qualifications, they MUST receive the same scores. Do not let names, gender, ethnicity, religion, or any non-professional attribute influence your judgment.
+4. The recommendation must be one of: "Recommended" (strong fit), "Consider" (partial fit), "Pass" (not a fit). It must logically follow from the scores and evidence.
+5. Custom field scores must align with their definitions above.
+6. Use the exact scoring format specified above for all score fields.
 
 {all_candidates}
 
 RESPONSE FORMAT:
 Return STRICT JSON only — no prose, no markdown fences. Return an array with exactly {len(batch)} objects, one per candidate in order.
-Each object must have exactly these keys matching the candidate's score fields. Copy the same field names from CURRENT SCORES above, but with your corrected values.
+Each object must have exactly the same score field keys as shown in MODEL A SCORES above, with your final values.
 
 Return ONLY the JSON array."""
 
-    result = call_calibrator(prompt)
+    result = call_arbiter(prompt)
 
     if not (isinstance(result, dict) and "choices" in result):
-        return [entry['scores'] for entry in batch]
+        return [entry.get('scores_a', {}) for entry in batch]
 
     raw = result["choices"][0]["message"]["content"]
-    try:
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+    parsed = _parse_arbiter_response(raw, len(batch))
+    if parsed:
+        return parsed
 
-        start = cleaned.find('[')
-        end = cleaned.rfind(']') + 1
-        if start != -1 and end > start:
-            calibrated = json.loads(cleaned[start:end])
-            if isinstance(calibrated, list) and len(calibrated) == len(batch):
-                return calibrated
-
-    except (json.JSONDecodeError, Exception):
-        pass
-
-    return [entry['scores'] for entry in batch]
+    return [entry.get('scores_a', {}) for entry in batch]
 
 
 # ---------- Evidence extraction (bias-free fact extraction) ----------
@@ -1834,41 +1843,45 @@ EVALUATION RULES:
             st.session_state.anonymization_mapping = []
             st.session_state.candidate_index = 0
 
-            # Clear per-batch score cache
+            # Clear per-batch caches
             _score_cache.clear()
+            _score_cache_b: Dict[str, dict] = {}
 
-            # Calibration: collect evidence + scores for cross-candidate comparison
-            calibration_batch = []
+            # Panel: collect both models' outputs for arbiter
+            arbiter_batch = []
             batch_scoring_format = {}
     
-            with st.spinner("Analyzing resumes with Mistral..."):
+            with st.spinner("Analyzing resumes (Model A: 90b + Model B: Nemotron 49b)..."):
                 for resume_filename, file_object in all_resume_files:
                     resume_text = extract_text_from_pdf(file_object)
                     original_text = resume_text
-                    # Extract candidate name via LLM from raw text
                     candidate_name_from_llm = extract_candidate_name(original_text)
-                    # Extract personal info for anonymization mapping
                     extracted = extract_personal_info(original_text)
-                    # Apply anonymization if enabled (for mapping records)
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
 
-                    # Call 1: LLM extracts only job-relevant facts,
-                    # critically ignoring all bias-introducing content
+                    # Step 1: Extract bias-free evidence
                     evidence_text = extract_evidence(resume_text)
-
-                    # Cache scores by evidence hash — if LLM produces
-                    # identical evidence for same-base variants, scores are reused
                     ev_key = _content_hash(evidence_text)
 
+                    # Step 2A: Model A (90b) scores the evidence
                     if ev_key in _score_cache:
                         result = _score_cache[ev_key]
                     else:
-                        # Call 2: Score the evidence (LLM never sees raw resume)
                         prompt = build_eval_prompt(
                             job_title, department, job_description, st.session_state.custom_fields, evidence_text
                         )
                         result = call_mistral(prompt)
                         _score_cache[ev_key] = result
+
+                    # Step 2B: Model B (Nemotron 49b) scores the same evidence
+                    if ev_key in _score_cache_b:
+                        result_b = _score_cache_b[ev_key]
+                    else:
+                        prompt_b = build_eval_prompt(
+                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                        )
+                        result_b = call_second_scorer(prompt_b)
+                        _score_cache_b[ev_key] = result_b
     
                     st.markdown(f"### 📄 {resume_filename}")
                     if isinstance(result, dict) and "choices" in result:
@@ -2109,22 +2122,42 @@ EVALUATION RULES:
                             }
                             st.session_state.evaluations.append(eval_with_metadata)
 
-                            # Collect data for batch calibration
-                            score_fields = {k: v for k, v in data.items() if k.endswith("_score")}
-                            score_fields["recommendation"] = data.get("recommendation", "")
+                            # Collect Model A data for arbiter
+                            scores_a = {k: v for k, v in data.items() if k.endswith("_score")}
+                            scores_a["recommendation"] = data.get("recommendation", "")
                             sf = data.get("scoring_format") or {}
                             if sf and not batch_scoring_format:
                                 batch_scoring_format = sf
+                            explanations_a = {k: v for k, v in data.items() if k.endswith("_explanation")}
+                            concerns_a = data.get("potential_concerns", [])
 
-                            explanations = {k: v for k, v in data.items() if k.endswith("_explanation")}
-                            concerns = data.get("potential_concerns", [])
+                            # Parse Model B output
+                            scores_b = {}
+                            explanations_b = {}
+                            concerns_b = []
+                            if isinstance(result_b, dict) and "choices" in result_b:
+                                raw_b = result_b["choices"][0]["message"]["content"]
+                                cleaned_b = clean_json_output(raw_b)
+                                if cleaned_b:
+                                    try:
+                                        data_b = json.loads(cleaned_b)
+                                        data_b = normalize_json_keys(data_b)
+                                        scores_b = {k: v for k, v in data_b.items() if k.endswith("_score")}
+                                        scores_b["recommendation"] = data_b.get("recommendation", "")
+                                        explanations_b = {k: v for k, v in data_b.items() if k.endswith("_explanation")}
+                                        concerns_b = data_b.get("potential_concerns", [])
+                                    except (json.JSONDecodeError, Exception):
+                                        pass
 
-                            calibration_batch.append({
+                            arbiter_batch.append({
                                 "candidate_name": getattr(evaluation, "candidate_name", "Unknown"),
                                 "evidence": evidence_text,
-                                "scores": score_fields,
-                                "explanations": explanations,
-                                "concerns": concerns
+                                "scores_a": scores_a,
+                                "explanations_a": explanations_a,
+                                "concerns_a": concerns_a,
+                                "scores_b": scores_b,
+                                "explanations_b": explanations_b,
+                                "concerns_b": concerns_b,
                             })
     
                         except (ValueError, ValidationError) as e:
@@ -2138,24 +2171,23 @@ EVALUATION RULES:
                     else:
                         st.error("❌ Failed to get response from Mistral.")
                         
-            # ---------- BATCH CALIBRATION (GPT 120b cross-candidate comparison) ----------
-            if len(calibration_batch) >= 2:
-                with st.spinner("Running batch calibration (GPT 120b) — comparing all candidates side by side..."):
-                    calibrated_scores = calibrate_batch_scores(
-                        calibration_batch, batch_scoring_format,
+            # ---------- ARBITER (GPT 120b final judgment from both models) ----------
+            if len(arbiter_batch) >= 2:
+                with st.spinner("GPT 120b arbiter reviewing both models' judgments for all candidates..."):
+                    final_scores = arbiter_final_judgment(
+                        arbiter_batch, batch_scoring_format,
                         job_title=job_title, job_description=job_description,
                         custom_fields=st.session_state.custom_fields
                     )
 
-                # Apply calibrated scores back to evaluations
                 changes_made = 0
-                for idx, corrected in enumerate(calibrated_scores):
+                for idx, final in enumerate(final_scores):
                     if idx >= len(st.session_state.evaluations):
                         break
                     eval_obj = st.session_state.evaluations[idx]["evaluation"]
-                    original_scores = calibration_batch[idx]["scores"]
+                    original_scores = arbiter_batch[idx]["scores_a"]
 
-                    for field, new_val in corrected.items():
+                    for field, new_val in final.items():
                         old_val = original_scores.get(field)
                         if str(new_val) != str(old_val):
                             changes_made += 1
@@ -2165,9 +2197,9 @@ EVALUATION RULES:
                                 pass
 
                 if changes_made > 0:
-                    st.success(f"Calibration adjusted {changes_made} score(s) across {len(calibration_batch)} candidates for consistency.")
+                    st.success(f"Arbiter (GPT 120b) finalized scores — adjusted {changes_made} score(s) across {len(arbiter_batch)} candidates after reviewing both models.")
                 else:
-                    st.info("Calibration confirmed all scores are already consistent — no changes needed.")
+                    st.info("Arbiter confirmed both models agree — no adjustments needed.")
 
             # After all evaluations, offer Excel download if we have results
             if st.session_state.evaluations:
