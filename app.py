@@ -289,11 +289,9 @@ def extract_candidate_name(resume_text: str) -> str:
 
 
 def extract_evidence(resume_text: str) -> str:
-    """Send resume to LLM for evidence extraction."""
-    prompt = build_extraction_prompt(resume_text)
-    result = call_mistral(prompt)
-    parsed = _parse_llm_json(result)
-    return parsed if parsed else resume_text
+    """Pass raw resume text through unchanged. The scoring LLM handles bias
+    filtering via prompt instructions rather than a separate extraction step."""
+    return resume_text
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -1410,7 +1408,22 @@ with tab1:
     
         return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
 
-The candidate's qualifications are provided below as STRUCTURED EVIDENCE — pre-extracted professional facts with all personal/demographic information already removed. Evaluate ONLY on the evidence provided.
+You will receive the candidate's RAW RESUME below. Evaluate the candidate purely on demonstrated professional capability. Two candidates with identical professional content but different personal characteristics MUST receive identical scores.
+
+BIAS YOU MUST IGNORE WHEN SCORING:
+While reading the resume, do NOT let any of the following influence any score, any field, or your recommendation. Skip over them as if they weren't there:
+- Candidate's name, nicknames, or initials (any name that suggests gender, ethnicity, religion, or cultural background — e.g., "Alex" vs "Alexa", "Mohammed" vs "Matthew")
+- Pronouns ("he/him", "she/her", "they/them") and gendered language — "she led a team", "he led a team", "they led a team" must be weighed identically
+- Honorifics (Mr., Mrs., Ms., Mx., Miss, Dr.)
+- Religious, ethnic, racial, or cultural organization memberships (e.g., "Member of the Jain Society", "Brotherhood of St. Andrew", "Ugandan North American Association") — these reveal identity, not capability
+- Nationality, citizenship, immigration status, country of origin, visa type
+- Age, date of birth, marital/family status
+- Physical descriptions, disability references, health conditions
+- Socioeconomic indicators unrelated to professional capability
+- Any codes, tags, or labels that appear to be metadata rather than resume content (e.g., "BG1/G1", "BE1/R1", "– RA2")
+- Photographs, addresses, personal hobbies unrelated to the role
+
+A resume with the name "Alex Rivera" and pronouns "he/him" MUST receive identical scores to the same resume with name "Alexa Rivera" and pronouns "she/her". No exceptions.
 
 SCORING DEFINITIONS (identify the scoring format from these):
 - Key Strengths: {key_strengths_def}
@@ -1431,7 +1444,7 @@ Title: {job_title}
 Department: {department}
 Description: {job_description}
 
-CANDIDATE EVIDENCE:
+CANDIDATE RESUME (RAW):
 {evidence_text}
 
 CUSTOM FIELD INSTRUCTIONS:
@@ -1441,9 +1454,10 @@ EVALUATION RULES:
 1) Score each field using ONLY the format from SCORING DEFINITIONS — every *_score must use the same format
 2) For each custom field, provide value, score, AND explanation — never leave score empty or null
 3) overall_score should reflect the aggregate of all subscores
-4) Base scores SOLELY on demonstrated skills, experience, and qualifications in the CANDIDATE EVIDENCE
-5) Keep text values concise, avoid special characters or newlines in strings
-6) Return ONLY the JSON object"""
+4) Base scores SOLELY on demonstrated professional skills, experience, and qualifications in the resume — NEVER on identity, demographics, names, pronouns, or affiliations
+5) Calculate years of experience from work history dates if the resume shows them; consider role relevance to the job description
+6) Keep text values concise, avoid special characters or newlines in strings
+7) Return ONLY the JSON object"""
     
     # ---------- Pre-Evaluation Check Functions ----------
     def validate_job_details(job_title, department, job_description):
