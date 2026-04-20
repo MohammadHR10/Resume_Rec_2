@@ -199,21 +199,27 @@ Return ONLY the JSON array."""
 def build_extraction_prompt(resume_text: str) -> str:
     """Build prompt that instructs the LLM to output the resume unchanged
     except with bias markers deleted."""
-    return f"""Return the resume below EXACTLY as written, but DELETE any parts that contain the following bias/identity information:
+    return f"""Return the resume below EXACTLY as written, but DELETE any content that reveals the candidate's identity, demographics, or background rather than their professional capability.
 
-- Name, nicknames, initials
-- Pronouns (he/she/his/her/him) and honorifics (Mr., Mrs., Ms., Mx., Miss, Dr.)
+For each sentence, phrase, or line in the resume, ask yourself:
+"Does this demonstrate a job-relevant skill, experience, or qualification? Or does this reveal something about who the candidate is as a person — their identity, demographics, or background?"
+
+If it's the second, DELETE it. Be thorough. When in doubt, delete.
+
+Categories of identity/background content to delete (non-exhaustive — use judgment):
+- Names, nicknames, initials of the candidate
+- Pronouns and gendered language (he/she/his/her/him) and honorifics (Mr., Mrs., Ms., etc.)
 - Contact info (email, phone, address, LinkedIn, GitHub, personal URLs)
-- Nationality, citizenship, visa status, country of origin
+- Nationality, citizenship, visa status, country/region of origin
 - Age, date of birth, marital/family status
-- Race, ethnicity, religion, gender
-- Religious/ethnic/cultural organization memberships (e.g., Jain Society, Brotherhood of St. Andrew)
-- Metadata codes/tags (e.g., names that reflects bias or irrelevant)
-- Photograph references
+- Race, ethnicity, religion, gender, sexual orientation
+- Memberships or affiliations in ANY organization that is not clearly a professional/technical body directly relevant to the job. This includes — but is not limited to — societies, associations, congresses, brotherhoods, fellowships, clubs, communities, or groups tied to religion, ethnicity, nationality, region, culture, or identity. Examples include things like "Society of North America", "American Congress", "Brotherhood of ...", "North American Association", "Jain Society", etc. If the organization's purpose is not obviously technical (IEEE, ACM, AMA, etc.) or the role's professional field, treat it as identity-revealing and delete it.
+- Metadata codes, tags, or labels that are not actual resume content
+- Photograph references, physical descriptions, disability references
 
-Only delete the bias parts. Leave everything else in the resume exactly as written.
+Leave all professional content (education, skills, work experience, dates, projects, achievements, certifications, technical publications, job-relevant leadership) EXACTLY as written — same wording, same formatting.
 
-Output only the resume text with bias deleted — no JSON, no commentary, no markdown.
+Output only the cleaned resume text — no JSON, no commentary, no markdown, no preamble.
 
 RESUME:
 {resume_text}"""
