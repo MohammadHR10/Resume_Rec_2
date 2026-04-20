@@ -197,54 +197,23 @@ Return ONLY the JSON array."""
 # ---------- Evidence extraction (bias-free fact extraction) ----------
 
 def build_extraction_prompt(resume_text: str) -> str:
-    """Build prompt that instructs the LLM to critically identify and ignore
-    any content that could introduce bias, extracting only job-relevant facts."""
-    return f"""You are a fair-hiring evidence extractor. Your purpose is to extract ONLY the professional qualifications from a resume so that a separate scoring system can evaluate candidates purely on merit.
+    """Build prompt that instructs the LLM to output the resume unchanged
+    except with bias markers deleted."""
+    return f"""Return the resume below EXACTLY as written, but DELETE any parts that contain the following bias/identity information:
 
-UNDERSTANDING BIAS IN HIRING:
-Bias in resume evaluation happens when a scorer is influenced — consciously or not — by information that reveals a candidate's identity rather than their ability. This includes but is not limited to:
-- Names, nicknames, or handles that suggest gender, ethnicity, or cultural background
-- Pronouns (he/him, she/her, they/them) or any gendered language
-- Religious, racial, ethnic, or cultural organization memberships that are not directly professional
-- Nationality, citizenship, immigration status, or country of origin
+- Name, nicknames, initials
+- Pronouns (he/she/his/her/him) and honorifics (Mr., Mrs., Ms., Mx., Miss, Dr.)
+- Contact info (email, phone, address, LinkedIn, GitHub, personal URLs)
+- Nationality, citizenship, visa status, country of origin
 - Age, date of birth, marital/family status
-- Physical descriptions or disability references
-- Socioeconomic indicators unrelated to professional capability
-- Any codes, tags, or labels that appear to be metadata rather than resume content (e.g., "BG1/G1", "BE1/R1")
+- Race, ethnicity, religion, gender
+- Religious/ethnic/cultural organization memberships (e.g., Jain Society, Brotherhood of St. Andrew)
+- Metadata codes/tags (e.g., names that reflects bias or irrelevant)
+- Photograph references
 
-YOUR TASK:
-Read the resume below and extract ONLY what demonstrates the candidate's professional capability. Think critically: for each piece of information, ask yourself "Does this tell me about the candidate's ability to do the job, or does it tell me about who they are as a person?" Only include the former.
+Only delete the bias parts. Leave everything else in the resume exactly as written.
 
-Two resumes with identical professional experience but different personal characteristics MUST produce identical output from you.
-
-Return STRICT JSON only — no prose, no markdown fences:
-{{
-  "education": [
-    {{"degree": "", "field": "", "university": "", "year": "", "gpa": "", "coursework": []}}
-  ],
-  "technical_skills": {{
-    "languages": [],
-    "frameworks": [],
-    "databases": [],
-    "tools_devops": [],
-    "core_competencies": []
-  }},
-  "work_experience": [
-    {{"company": "", "title": "", "duration": "", "achievements": []}}
-  ],
-  "projects": [
-    {{"name": "", "description": "", "tech_stack": [], "metrics": []}}
-  ],
-  "certifications": [],
-  "volunteering": [
-    {{"organization": "", "role": "", "duration": "", "contributions": []}}
-  ],
-  "leadership": [],
-  "awards": [],
-  "additional_relevant": []
-}}
-
-When writing achievements, strip any personal references — write "Improved API latency by 40%" not "He improved API latency by 40%". Focus on WHAT was done and the IMPACT, not WHO did it.
+Output only the resume text with bias deleted — no JSON, no commentary, no markdown.
 
 RESUME:
 {resume_text}"""
@@ -289,8 +258,18 @@ def extract_candidate_name(resume_text: str) -> str:
 
 
 def extract_evidence(resume_text: str) -> str:
-    """Pass raw resume text through unchanged. The scoring LLM handles bias
-    filtering via prompt instructions rather than a separate extraction step."""
+    """Use LLM to produce a bias-free rewrite of the resume, preserving all
+    professional content verbatim. The scoring LLMs see only this cleaned version."""
+    prompt = build_extraction_prompt(resume_text)
+    result = call_mistral(prompt)
+    if isinstance(result, dict) and "choices" in result:
+        cleaned = result["choices"][0]["message"]["content"].strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        return cleaned if cleaned else resume_text
     return resume_text
 
 
@@ -1408,22 +1387,7 @@ with tab1:
     
         return f"""You are an expert hiring manager evaluating a candidate. Return STRICT JSON only—no prose/markdown/fences.
 
-You will receive the candidate's RAW RESUME below. Evaluate the candidate purely on demonstrated professional capability. Two candidates with identical professional content but different personal characteristics MUST receive identical scores.
-
-BIAS YOU MUST IGNORE WHEN SCORING:
-While reading the resume, do NOT let any of the following influence any score, any field, or your recommendation. Skip over them as if they weren't there:
-- Candidate's name, nicknames, or initials (any name that suggests gender, ethnicity, religion, or cultural background — e.g., "Alex" vs "Alexa", "Mohammed" vs "Matthew")
-- Pronouns ("he/him", "she/her", "they/them") and gendered language — "she led a team", "he led a team", "they led a team" must be weighed identically
-- Honorifics (Mr., Mrs., Ms., Mx., Miss, Dr.)
-- Religious, ethnic, racial, or cultural organization memberships (e.g., "Member of the Jain Society", "Brotherhood of St. Andrew", "Ugandan North American Association") — these reveal identity, not capability
-- Nationality, citizenship, immigration status, country of origin, visa type
-- Age, date of birth, marital/family status
-- Physical descriptions, disability references, health conditions
-- Socioeconomic indicators unrelated to professional capability
-- Any codes, tags, or labels that appear to be metadata rather than resume content (e.g., "BG1/G1", "BE1/R1", "– RA2")
-- Photographs, addresses, personal hobbies unrelated to the role
-
-A resume with the name "Alex Rivera" and pronouns "he/him" MUST receive identical scores to the same resume with name "Alexa Rivera" and pronouns "she/her". No exceptions.
+The candidate's qualifications are provided below. Identity information (name, pronouns, contact, affiliations, demographics) has already been removed so you can focus purely on professional content. Evaluate strictly on demonstrated skills, experience, and qualifications.
 
 SCORING DEFINITIONS (identify the scoring format from these):
 - Key Strengths: {key_strengths_def}
