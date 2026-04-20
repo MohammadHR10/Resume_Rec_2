@@ -7,6 +7,16 @@ import re
 
 app = FastAPI(title="Resume Recommender API")
 
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {
+        "status": "running",
+        "message": "Resume Recommender API is running",
+        "docs": "/docs",
+        "endpoint": "POST /recommend"
+    }
+
 def extract_json_from_response(text: str) -> dict:
     """Extract JSON from AI response"""
     json_pattern = r'\{[\s\S]*\}'

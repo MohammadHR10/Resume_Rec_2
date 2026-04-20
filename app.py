@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral, call_second_scorer, call_arbiter
 from pdf_extract import extract_text_from_pdf
-import json, re, zipfile, io, datetime, base64, hashlib
+import json, re, zipfile, io, datetime, base64
 from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
@@ -288,193 +288,12 @@ def extract_candidate_name(resume_text: str) -> str:
     return ""
 
 
-def strip_bias_from_resume(text: str) -> str:
-    """Remove identity/bias information from resume text using STRUCTURAL rules
-    (position, format, linguistic patterns) — not content-specific hardcoding.
-    
-    Works on any resume format by detecting:
-    - Header block (everything before first section heading)
-    - Contact patterns (email, phone, URL, address)
-    - Metadata codes (alphanumeric tags)
-    - Pronouns and honorifics (linguistic)
-    - Affiliation/membership sentences (sentence-level pattern)
-    """
-    # --- Phase 1: Identify section headings to find where header ends ---
-    section_keywords = {
-        'summary', 'objective', 'profile', 'about',
-        'education', 'academic', 'qualification',
-        'skill', 'technical skill', 'core competenc', 'proficienc',
-        'experience', 'employment', 'work history', 'professional experience',
-        'project', 'technical project',
-        'certification', 'license',
-        'award', 'honor', 'achievement',
-        'publication', 'research',
-        'volunteer', 'community',
-        'leadership', 'activit',
-        'interest', 'hobby', 'hobbies',
-        'reference',
-    }
-
-    def is_section_heading(line: str) -> bool:
-        clean = line.strip().rstrip(':').lower()
-        clean = re.sub(r'[^a-z\s]', '', clean).strip()
-        if not clean or len(clean) > 60:
-            return False
-        for kw in section_keywords:
-            if kw in clean:
-                return True
-        return False
-
-    lines = text.split('\n')
-
-    # --- Phase 2: Extract name tokens from header so we can strip them from body ---
-    name_tokens = set()
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if is_section_heading(stripped):
-            break
-        # First non-empty, non-contact line is likely the name
-        if not re.search(r'@|\d{3}.*\d{4}|linkedin|github|http', stripped, re.I):
-            # Strip codes/punctuation, extract word tokens ≥ 2 chars
-            name_line = re.sub(r'\s*[–\-]\s*\S+$', '', stripped)  # remove trailing codes
-            name_line = re.sub(r'\b(Mr|Mrs|Ms|Mx|Miss|Dr)\.?\s*', '', name_line, flags=re.I)
-            name_line = re.sub(r'\b(he|she|they|him|her|them)[/\w]*', '', name_line, flags=re.I)
-            for token in re.findall(r"[A-Z][a-z]+(?:'[a-z]+)?", name_line):
-                if len(token) >= 2:
-                    name_tokens.add(token)
-            if name_tokens:
-                break
-
-    cleaned_lines = []
-    found_first_section = False
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            cleaned_lines.append('')
-            continue
-
-        # --- Before first section heading: drop everything (name, contact, etc.) ---
-        if not found_first_section:
-            if is_section_heading(stripped):
-                found_first_section = True
-                cleaned_lines.append(stripped)
-            continue
-
-        line_cleaned = stripped
-
-        # --- Strip candidate name tokens from body text ---
-        for token in name_tokens:
-            line_cleaned = re.sub(r'\b' + re.escape(token) + r'\b', '', line_cleaned)
-
-        # --- Metadata codes anywhere (e.g., "– BE1/G1", "BG2/RA1") ---
-        line_cleaned = re.sub(r'\s*[–\-]\s*[A-Z]{2,4}\d?[/_][A-Z]{1,4}\d?\b', '', line_cleaned)
-        line_cleaned = re.sub(r'\b[A-Z]{2,4}\d[/_][A-Z]{1,4}\d?\b', '', line_cleaned)
-        # Parenthesized codes like (BE1_G1)
-        line_cleaned = re.sub(r'\([A-Z0-9_/]{3,}\)', '', line_cleaned)
-
-        # --- Contact info that leaked past the header ---
-        line_cleaned = re.sub(r'\S+@\S+\.\S+', '', line_cleaned)
-        line_cleaned = re.sub(r'\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}', '', line_cleaned)
-        line_cleaned = re.sub(r'https?://\S+', '', line_cleaned)
-        line_cleaned = re.sub(r'linkedin\.com/\S+', '', line_cleaned, flags=re.I)
-        line_cleaned = re.sub(r'github\.com/\S+', '', line_cleaned, flags=re.I)
-
-        # --- Affiliation sentences: "Member/Fellow/Volunteer of/at/with ..." ---
-        # Remove from the keyword up to the sentence-ending period.
-        # Uses {1,3} period groups to handle abbreviations like "St. Andrew."
-        line_cleaned = re.sub(
-            r'(?:Member|Fellow|Associate|Volunteer|Participant|Affiliate)'
-            r'\s+(?:of|at|with|in)\s+(?:the\s+)?(?:[^.]{2,}\.){1,3}\s*',
-            '', line_cleaned, flags=re.I
-        )
-
-        # --- Pronouns → neutral ---
-        line_cleaned = re.sub(r'\bHe\b', 'They', line_cleaned)
-        line_cleaned = re.sub(r'\bShe\b', 'They', line_cleaned)
-        line_cleaned = re.sub(r'\b(he|she)\b', 'they', line_cleaned)
-        line_cleaned = re.sub(r'\bHim\b', 'Them', line_cleaned)
-        line_cleaned = re.sub(r'\b(him)\b', 'them', line_cleaned)
-        line_cleaned = re.sub(r'\bHis\b', 'Their', line_cleaned)
-        line_cleaned = re.sub(r'\b(his)\b', 'their', line_cleaned)
-        line_cleaned = re.sub(r'\bHer\b(?=\s)', 'Their', line_cleaned)
-        line_cleaned = re.sub(r'\b(her)\b(?=\s)', 'their', line_cleaned)
-        line_cleaned = re.sub(r'\b(himself|herself)\b', 'themselves', line_cleaned, flags=re.I)
-
-        # --- Honorifics ---
-        line_cleaned = re.sub(r'\b(Mr|Mrs|Ms|Mx|Miss)\.?\s+', '', line_cleaned)
-
-        final = line_cleaned.strip()
-        if final:
-            cleaned_lines.append(final)
-
-    return '\n'.join(cleaned_lines)
-
-
-def _normalize_evidence_json(evidence_str: str) -> str:
-    """Normalize LLM-extracted evidence JSON so minor wording differences
-    between variants collapse to the same canonical form.
-    
-    Sorts all lists, lowercases all strings, strips extra whitespace.
-    This is the second layer of dedup — catches anything Python pre-cleaning missed.
-    """
-    try:
-        data = json.loads(evidence_str)
-    except (json.JSONDecodeError, TypeError):
-        return ' '.join(evidence_str.lower().split())
-
-    def _normalize_val(v):
-        if isinstance(v, str):
-            return ' '.join(v.lower().strip().split())
-        if isinstance(v, list):
-            normalized = [_normalize_val(item) for item in v]
-            try:
-                return sorted(normalized, key=lambda x: json.dumps(x, sort_keys=True, default=str))
-            except TypeError:
-                return normalized
-        if isinstance(v, dict):
-            return {k: _normalize_val(val) for k, val in sorted(v.items())}
-        return v
-
-    return json.dumps(_normalize_val(data), sort_keys=True, ensure_ascii=False)
-
-
-def _content_hash(text: str) -> str:
-    """Compute a stable hash of cleaned text for cache keying."""
-    normalized = ' '.join(text.lower().split())
-    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
-
-
-# Per-batch caches
-_score_cache: Dict[str, dict] = {}
-_evidence_cache: Dict[str, str] = {}
-
-
 def extract_evidence(resume_text: str) -> str:
-    """Extract bias-free evidence from a resume. Two-layer caching:
-    
-    Layer 1: Hash the Python-cleaned resume text. If two variants produce
-    identical cleaned text, skip the LLM call entirely (reuse cached evidence).
-    
-    Layer 2: After LLM extraction, normalize the evidence JSON. Even if the
-    LLM produced slightly different wording, normalization collapses them
-    to the same canonical form for scoring cache keying.
-    """
-    cleaned = strip_bias_from_resume(resume_text)
-    input_key = _content_hash(cleaned)
-
-    if input_key in _evidence_cache:
-        return _evidence_cache[input_key]
-
-    prompt = build_extraction_prompt(cleaned)
+    """Send resume to LLM for evidence extraction."""
+    prompt = build_extraction_prompt(resume_text)
     result = call_mistral(prompt)
     parsed = _parse_llm_json(result)
-    evidence = parsed if parsed else cleaned
-
-    _evidence_cache[input_key] = evidence
-    return evidence
+    return parsed if parsed else resume_text
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -2020,11 +1839,6 @@ EVALUATION RULES:
             st.session_state.anonymization_mapping = []
             st.session_state.candidate_index = 0
 
-            # Clear per-batch caches
-            _score_cache.clear()
-            _evidence_cache.clear()
-            _score_cache_b: Dict[str, dict] = {}
-
             # Panel: collect both models' outputs for arbiter
             arbiter_batch = []
             batch_scoring_format = {}
@@ -2038,25 +1852,16 @@ EVALUATION RULES:
                     anonymized_text, llm_extracted = anonymize_text(resume_text, st.session_state.get('anonymize_fields'))
 
                     evidence_text = extract_evidence(resume_text)
-                    ev_key = _content_hash(_normalize_evidence_json(evidence_text))
 
-                    if ev_key in _score_cache:
-                        result = _score_cache[ev_key]
-                    else:
-                        prompt = build_eval_prompt(
-                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
-                        )
-                        result = call_mistral(prompt)
-                        _score_cache[ev_key] = result
+                    prompt = build_eval_prompt(
+                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                    )
+                    result = call_mistral(prompt)
 
-                    if ev_key in _score_cache_b:
-                        result_b = _score_cache_b[ev_key]
-                    else:
-                        prompt_b = build_eval_prompt(
-                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
-                        )
-                        result_b = call_second_scorer(prompt_b)
-                        _score_cache_b[ev_key] = result_b
+                    prompt_b = build_eval_prompt(
+                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                    )
+                    result_b = call_second_scorer(prompt_b)
     
                     st.markdown(f"### 📄 {resume_filename}")
                     if isinstance(result, dict) and "choices" in result:

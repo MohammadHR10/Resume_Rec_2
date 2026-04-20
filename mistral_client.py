@@ -1,12 +1,10 @@
 import os
-import time
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 SEED = 42
-MAX_RETRIES = 5
 
 # --- Provider configs ---
 # Model A: Groq (primary scorer)
@@ -45,24 +43,13 @@ def _call_api(prompt, model, api_url, api_key, extra_headers=None, use_seed=True
     if use_seed:
         payload["seed"] = SEED
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=120)
-        except requests.exceptions.RequestException as e:
-            return {"error": str(e), "status_code": 0, "raw": ""}
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e), "status_code": 0, "raw": ""}
 
-        if response.status_code == 429:
-            wait = 2 ** attempt + 1
-            print(f"Rate limited ({model}), waiting {wait}s before retry {attempt+1}/{MAX_RETRIES}")
-            time.sleep(wait)
-            continue
-
-        if response.status_code != 200:
-            print(f"LLM call failed ({model} @ {api_url}) status {response.status_code}: {response.text[:300]}")
-
-        break
-    else:
-        return {"error": "Rate limited after max retries", "status_code": 429, "raw": ""}
+    if response.status_code != 200:
+        print(f"LLM call failed ({model} @ {api_url}) status {response.status_code}: {response.text[:300]}")
 
     try:
         data = response.json()
