@@ -102,3 +102,16 @@ def call_arbiter(prompt):
     if GATEWAY_KEY and GATEWAY_URL:
         return _call_api(prompt, MODEL_ARBITER, GATEWAY_URL, GATEWAY_KEY)
     return {"error": "No API key configured for arbiter", "choices": []}
+
+
+def call_extractor(prompt):
+    """Call the extraction model (same as arbiter: GPT 120b / strongest available)
+    for bias-free resume extraction. Using a separate strong model for extraction
+    keeps the scoring models independent and extraction more consistent."""
+    if GEMINI_API_KEY:
+        return _call_api(prompt, MODEL_ARBITER, GEMINI_URL, GEMINI_API_KEY, use_seed=False)
+    if GROQ_API_KEY:
+        return _call_api(prompt, MODEL_ARBITER, GROQ_URL, GROQ_API_KEY)
+    if GATEWAY_KEY and GATEWAY_URL:
+        return _call_api(prompt, MODEL_ARBITER, GATEWAY_URL, GATEWAY_KEY)
+    return {"error": "No API key configured for extractor", "choices": []}

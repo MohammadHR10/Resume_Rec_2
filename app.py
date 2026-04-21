@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple, Type, Union
 from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
-from mistral_client import call_mistral, call_second_scorer, call_arbiter
+from mistral_client import call_mistral, call_second_scorer, call_arbiter, call_extractor
 from pdf_extract import extract_text_from_pdf
 import json, re, zipfile, io, datetime, base64
 from pathlib import Path
@@ -264,10 +264,11 @@ def extract_candidate_name(resume_text: str) -> str:
 
 
 def extract_evidence(resume_text: str) -> str:
-    """Use LLM to produce a bias-free rewrite of the resume, preserving all
-    professional content verbatim. The scoring LLMs see only this cleaned version."""
+    """Use a dedicated strong model (GPT 120b / arbiter-class) for bias-free
+    resume extraction. Separating this from the scoring models keeps extraction
+    consistent and prevents the scorer from doing double duty."""
     prompt = build_extraction_prompt(resume_text)
-    result = call_mistral(prompt)
+    result = call_extractor(prompt)
     if isinstance(result, dict) and "choices" in result:
         cleaned = result["choices"][0]["message"]["content"].strip()
         if cleaned.startswith("```"):
