@@ -21,26 +21,62 @@ _evidence_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _normalize_evidence(text: str) -> str:
-    """Cosmetic normalization only. Preserves every word, number, and skill."""
+    """Cosmetic normalization only. Preserves every word, number, and skill.
+    Canonicalizes bullets, unicode, whitespace, and soft-wrapped lines so that
+    LLM-extracted evidence for cosmetic-twin resumes becomes identical."""
     if not text:
         return ""
     text = unicodedata.normalize("NFKC", text)
-    text = text.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-")
-    text = text.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+    # Unify dash family
+    for ch in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"):
+        text = text.replace(ch, "-")
+    # Unify quote family
     text = text.replace("\u2018", "'").replace("\u2019", "'")
     text = text.replace("\u201C", '"').replace("\u201D", '"')
+    # Unify bullet family → ascii dash
+    for ch in ("\u2022", "\u2023", "\u25E6", "\u2043", "\u2219",
+               "\u25AA", "\u25AB", "\u25CF", "\u25CB", "\u25A0", "\u25A1",
+               "\u00B7", "\u2027"):
+        text = text.replace(ch, "-")
     text = text.replace("\u00A0", " ")
+
     lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.splitlines()]
-    out = "\n".join(ln for ln in lines if ln != "")
+    lines = [ln for ln in lines if ln != ""]
+
+    # Join soft-wrapped lines: if a line doesn't end with a sentence terminator
+    # and the next line looks like a continuation (lowercase start, or starts
+    # with a conjunction/preposition), merge them. Do NOT merge into bullets,
+    # headers, or lines that clearly start new items.
+    sentence_end = re.compile(r"[\.\!\?\:\;\)\]]$|^-")
+    bullet_start = re.compile(r"^\s*(?:-|\*|\d+[\.\)]|[A-Z][A-Z \-/&]{2,}$)")
+    merged: List[str] = []
+    for ln in lines:
+        if merged and not sentence_end.search(merged[-1]) and not bullet_start.match(ln) and ln[:1].islower():
+            merged[-1] = merged[-1] + " " + ln
+        else:
+            merged.append(ln)
+
+    out = "\n".join(merged)
     out = re.sub(r"\n{2,}", "\n", out)
     return out.strip()
 
 
+def _canonical_form(text: str) -> str:
+    """Ultra-aggressive canonical form for the cache key ONLY.
+    Lowercases, strips all punctuation, collapses all whitespace to single
+    spaces. Preserves words, numbers, and technology names so that different
+    resumes still produce different keys."""
+    t = _normalize_evidence(text).lower()
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
 def _evidence_cache_key(text: str) -> str:
-    """Aggressive key for cache lookup: case-insensitive over normalized text.
-    This is ONLY used as a dict key — the actual text sent to the LLM is the
-    case-preserved normalized version."""
-    return hashlib.sha256(_normalize_evidence(text).lower().encode("utf-8")).hexdigest()
+    """Cache key over the canonical form. Two evidences that share identical
+    words/numbers/technologies — regardless of bullets, wrapping, case,
+    punctuation, or unicode variants — will collide to the same key."""
+    return hashlib.sha256(_canonical_form(text).encode("utf-8")).hexdigest()
 
 
 def _reset_evidence_cache() -> None:
@@ -255,6 +291,11 @@ Categories of identity/background content to delete (non-exhaustive — use judg
 - Photograph references, physical descriptions, disability references
 
 Leave all professional content (education, skills, work experience, dates, projects, achievements, certifications, technical publications, job-relevant leadership) EXACTLY as written — same wording, same formatting.
+
+DISAMBIGUATION RULES (apply consistently on every resume):
+1. Location of an INSTITUTION (a university campus, an employer's office, a project's deployment region) is professional context — KEEP it. Only delete location when it refers to the CANDIDATE's personal origin, residence, or citizenship. Example: "University of Illinois Urbana-Champaign | Urbana, IL" — keep in full, including "Urbana, IL". Example: "Originally from Lagos, Nigeria" — delete in full, it describes the candidate.
+2. Copy kept content VERBATIM — character for character. Do not paraphrase, summarize, rephrase, correct typos, or simplify. Numbers and metrics must stay exactly as written: "4x" stays "4x" (not "4"), "40%" stays "40%" (not "40 percent"), "p99 50ms" stays "p99 50ms", "$2.5B" stays "$2.5B". If you would rewrite a sentence in your own words, STOP and copy it instead.
+3. For any "Hobbies", "Interests", "Personal", or "About Me" section: keep ONLY items that demonstrate clear job-relevant technical capability (e.g., "Contributing to open-source Kubernetes", "Published distributed-systems research"). Omit everything else (e.g., "Woodworking", "Travel and photography", "Cooking"). Apply this rule identically on every resume — when in doubt, omit.
 
 Output only the cleaned resume text — no JSON, no commentary, no markdown, no preamble.
 
