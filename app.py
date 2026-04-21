@@ -3,11 +3,48 @@ from pydantic import BaseModel, Field, create_model, ValidationError
 import streamlit as st
 from mistral_client import call_mistral, call_second_scorer, call_arbiter, call_extractor
 from pdf_extract import extract_text_from_pdf
-import json, re, zipfile, io, datetime, base64
+import json, re, zipfile, io, datetime, base64, hashlib, unicodedata
 from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+
+# ---------- Evidence normalization + per-batch cache ----------
+# Goal: guarantee that two resumes whose LLM-extracted evidence differs ONLY in
+# cosmetic ways (capitalization, whitespace, unicode dashes, smart quotes) are
+# scored identically. We do NOT alter any word, skill, number, date, or metric.
+# The cache is reset at the start of every batch run so changes to the job
+# description are always honored.
+
+_evidence_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _normalize_evidence(text: str) -> str:
+    """Cosmetic normalization only. Preserves every word, number, and skill."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-")
+    text = text.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
+    text = text.replace("\u201C", '"').replace("\u201D", '"')
+    text = text.replace("\u00A0", " ")
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.splitlines()]
+    out = "\n".join(ln for ln in lines if ln != "")
+    out = re.sub(r"\n{2,}", "\n", out)
+    return out.strip()
+
+
+def _evidence_cache_key(text: str) -> str:
+    """Aggressive key for cache lookup: case-insensitive over normalized text.
+    This is ONLY used as a dict key — the actual text sent to the LLM is the
+    case-preserved normalized version."""
+    return hashlib.sha256(_normalize_evidence(text).lower().encode("utf-8")).hexdigest()
+
+
+def _reset_evidence_cache() -> None:
+    _evidence_cache.clear()
 
 
 # ---------- Post-processing: deterministic business rules ----------
@@ -269,15 +306,26 @@ def extract_evidence(resume_text: str) -> str:
     consistent and prevents the scorer from doing double duty."""
     prompt = build_extraction_prompt(resume_text)
     result = call_extractor(prompt)
-    if isinstance(result, dict) and "choices" in result:
-        cleaned = result["choices"][0]["message"]["content"].strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-        return cleaned if cleaned else resume_text
-    return resume_text
+
+    if not isinstance(result, dict) or "choices" not in result:
+        err = (result or {}).get("error", "unknown error") if isinstance(result, dict) else "no response"
+        msg = f"⚠️ Extraction LLM call failed ({err}). Scorers will see the RAW resume — bias not removed."
+        print(msg)
+        try:
+            st.warning(msg)
+        except Exception:
+            pass
+        return resume_text
+
+    cleaned = result["choices"][0]["message"]["content"].strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    if not cleaned:
+        return _normalize_evidence(resume_text)
+    return _normalize_evidence(cleaned)
 
 
 # ---------- LLM-based field extraction for anonymization ----------
@@ -1827,7 +1875,10 @@ EVALUATION RULES:
             # Panel: collect both models' outputs for arbiter
             arbiter_batch = []
             batch_scoring_format = {}
-    
+
+            # Reset per-batch evidence cache so new job descriptions are honored
+            _reset_evidence_cache()
+
             with st.spinner("Analyzing resumes (Model A: 90b + Model B: Nemotron 49b)..."):
                 for resume_filename, file_object in all_resume_files:
                     resume_text = extract_text_from_pdf(file_object)
@@ -1838,15 +1889,27 @@ EVALUATION RULES:
 
                     evidence_text = extract_evidence(resume_text)
 
-                    prompt = build_eval_prompt(
-                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
-                    )
-                    result = call_mistral(prompt)
+                    # Cosmetic-identity cache: if we've already scored an evidence
+                    # that is identical up to whitespace/case/unicode, reuse the
+                    # raw scorer responses to guarantee consistent output for
+                    # bias-variant duplicates.
+                    cache_key = _evidence_cache_key(evidence_text)
+                    cached = _evidence_cache.get(cache_key)
+                    if cached is not None:
+                        result = cached["result"]
+                        result_b = cached["result_b"]
+                    else:
+                        prompt = build_eval_prompt(
+                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                        )
+                        result = call_mistral(prompt)
 
-                    prompt_b = build_eval_prompt(
-                        job_title, department, job_description, st.session_state.custom_fields, evidence_text
-                    )
-                    result_b = call_second_scorer(prompt_b)
+                        prompt_b = build_eval_prompt(
+                            job_title, department, job_description, st.session_state.custom_fields, evidence_text
+                        )
+                        result_b = call_second_scorer(prompt_b)
+
+                        _evidence_cache[cache_key] = {"result": result, "result_b": result_b}
     
                     st.markdown(f"### 📄 {resume_filename}")
                     if isinstance(result, dict) and "choices" in result:
