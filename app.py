@@ -1566,7 +1566,6 @@ EVALUATION RULES:
         subheader_font = Font(color="FFFFFF", bold=True, size=10)
         # Dark sub-header text for use on light-colored fills (readable contrast)
         subheader_font_dark = Font(color="1F3864", bold=True, size=10)
-        identifier_fill = PatternFill(start_color="DAE3F3", end_color="DAE3F3", fill_type="solid")  # Light blue for identifier-only columns
         score_fill = PatternFill(start_color="D5E8D4", end_color="D5E8D4", fill_type="solid")  # Light green for scores
         explanation_fill = PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid")  # Light orange for explanations
         border = Border(
@@ -1610,11 +1609,12 @@ EVALUATION RULES:
                 custom_score_headers.append(f"{field_display} Score")
                 custom_explanation_headers.append(f"{field_display} Explanation")
         
-        # Combine all headers
-        # Place custom Values and Scores within the SCORES section
-        all_score_headers = score_headers + custom_value_headers + custom_score_headers
+        # Combine all headers.
+        # Identifier columns share the SCORES section band — same color, just
+        # positioned at the very start for easy manual traceability.
+        all_score_headers = identifier_headers + score_headers + custom_value_headers + custom_score_headers
         all_explanation_headers = explanation_headers + custom_explanation_headers
-        all_headers = identifier_headers + all_score_headers + all_explanation_headers + ["Custom Considerations", "Extracted Evidence", "Notes"]
+        all_headers = all_score_headers + all_explanation_headers + ["Custom Considerations", "Extracted Evidence", "Notes"]
 
         def _col_letter(idx: int) -> str:
             """Convert 1-based column index to Excel letter(s), e.g. 1->A, 27->AA."""
@@ -1625,19 +1625,9 @@ EVALUATION RULES:
             return s
 
         # ----- Main (row 1) section headers -----
-        # IDENTIFIERS section
-        id_start = 1
-        id_end = len(identifier_headers)
-        ws.merge_cells(f'{_col_letter(id_start)}1:{_col_letter(id_end)}1')
-        cell = ws.cell(row=1, column=id_start, value="IDENTIFIERS")
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        cell.border = border
-
-        # SCORES & BASIC INFO section
-        score_start = len(identifier_headers) + 1
-        score_end = len(identifier_headers) + len(all_score_headers)
+        # SCORES & BASIC INFO section (includes the two identifier columns at the front)
+        score_start = 1
+        score_end = len(all_score_headers)
         ws.merge_cells(f'{_col_letter(score_start)}1:{_col_letter(score_end)}1')
         cell = ws.cell(row=1, column=score_start, value="SCORES & BASIC INFO")
         cell.font = header_font
@@ -1665,15 +1655,7 @@ EVALUATION RULES:
             ws.cell(row=1, column=col_num).border = border
 
         # ----- Sub-header row (row 2) -----
-        # Identifier sub-headers — dark text on light blue for readability
-        for col_num, header in enumerate(identifier_headers, 1):
-            cell = ws.cell(row=2, column=col_num, value=header)
-            cell.font = subheader_font_dark
-            cell.fill = identifier_fill
-            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            cell.border = border
-
-        # Score sub-headers — dark text on light green
+        # All SCORES sub-headers (including identifiers) — dark text on light green
         for col_num, header in enumerate(all_score_headers, score_start):
             cell = ws.cell(row=2, column=col_num, value=header)
             cell.font = subheader_font_dark
@@ -1702,16 +1684,14 @@ EVALUATION RULES:
         for row_num, eval_item in enumerate(evaluations_with_metadata, 3):
             eval_data = eval_item["evaluation"]
 
-            # IDENTIFIERS SECTION — never sent to LLM, only for human traceability
+            # IDENTIFIER COLUMNS — never sent to LLM, only for human traceability.
+            # Styled identically to other SCORES columns so they blend in visually.
             col = 1
             resume_index = row_num - 2  # row 3 -> Resume 1, row 4 -> Resume 2, ...
-            cell = ws.cell(row=row_num, column=col, value=f"Resume {resume_index}")
-            cell.border = border
-            cell.fill = identifier_fill
+            ws.cell(row=row_num, column=col, value=f"Resume {resume_index}").border = border
             col += 1
             cell = ws.cell(row=row_num, column=col, value=eval_item.get("resume_filename", ""))
             cell.border = border
-            cell.fill = identifier_fill
             cell.alignment = Alignment(wrap_text=True, vertical='top')
             col += 1
 
