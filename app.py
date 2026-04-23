@@ -2360,6 +2360,16 @@ EVALUATION RULES:
                             except Exception:
                                 pass
 
+                    # Re-apply business rules so recommendation is deterministic
+                    # even after the arbiter overwrites scores
+                    post_arbiter_data = eval_obj.model_dump() if hasattr(eval_obj, 'model_dump') else eval_obj.dict()
+                    post_arbiter_data = apply_business_rules(post_arbiter_data)
+                    for field, val in post_arbiter_data.items():
+                        try:
+                            setattr(eval_obj, field, val)
+                        except Exception:
+                            pass
+
                 if changes_made > 0:
                     st.success(f"Arbiter (GPT 120b) finalized scores — adjusted {changes_made} score(s) across {len(arbiter_batch)} candidates after reviewing both models.")
                 else:
