@@ -84,13 +84,70 @@ def _reset_evidence_cache() -> None:
 
 
 # ---------- Post-processing: deterministic business rules ----------
+
+def _compute_recommendation(overall, scale: list, best, worst) -> str:
+    """Deterministically map overall_score → Recommended / Consider / Pass.
+
+    Works with ANY scoring format the LLM declares:
+      - Numeric (1-5, 1-100, 0-10, …): uses ratio = (score-worst)/(best-worst)
+      - Label-based (Yes/No/Maybe, A-F, Poor→Excellent, …): uses position in
+        the ordered scale list.
+
+    Thresholds (applied uniformly to every resume in the batch):
+      ratio ≥ 0.70  →  Recommended
+      ratio ≥ 0.40  →  Consider
+      ratio <  0.40  →  Pass
+    """
+    # --- Try numeric comparison first ---
+    try:
+        num_overall = float(overall)
+        num_best = float(best)
+        num_worst = float(worst)
+        total_range = num_best - num_worst
+        if total_range == 0:
+            return "Consider"
+        ratio = (num_overall - num_worst) / total_range
+        if ratio >= 0.70:
+            return "Recommended"
+        elif ratio >= 0.40:
+            return "Consider"
+        else:
+            return "Pass"
+    except (ValueError, TypeError):
+        pass
+
+    # --- Label-based: use position in the ordered scale ---
+    if scale:
+        scale_lower = [str(s).lower() for s in scale]
+        overall_lower = str(overall).lower()
+        if overall_lower in scale_lower:
+            idx = scale_lower.index(overall_lower)
+            total = len(scale_lower)
+            ratio = idx / max(total - 1, 1)
+            if ratio >= 0.70:
+                return "Recommended"
+            elif ratio >= 0.40:
+                return "Consider"
+            else:
+                return "Pass"
+
+    # --- Fallback: direct match against best/worst ---
+    overall_lower = str(overall).lower()
+    if overall_lower == str(best).lower():
+        return "Recommended"
+    elif overall_lower == str(worst).lower():
+        return "Pass"
+
+    return "Consider"
+
+
 def apply_business_rules(data: dict) -> dict:
     """Apply deterministic business rules AFTER LLM returns scores.
 
-    The LLM decides the recommendation itself (it understands whatever scoring
-    format is in use). This function only:
     1. Validates all scores use the same format
-    2. Overrides recommendation to "Pass" if minimum requirements fail
+    2. Deterministically computes recommendation from overall_score using fixed
+       thresholds (ignores whatever the LLM wrote for recommendation)
+    3. Overrides recommendation to "Pass" if minimum requirements fail
     """
     sf = data.get("scoring_format") or {}
     scale = sf.get("scale", [])
@@ -118,8 +175,12 @@ def apply_business_rules(data: dict) -> dict:
                         data[field] = s
                         break
 
-    # --- Step 2: Requirements override ---
-    # If any field named *requirement* or *qualification* has the worst score, force Pass
+    # --- Step 2: Deterministic recommendation from overall_score ---
+    overall = data.get("overall_score")
+    if overall is not None and best is not None and worst is not None:
+        data["recommendation"] = _compute_recommendation(overall, scale, best, worst)
+
+    # --- Step 3: Requirements override (can still force Pass) ---
     for field, val in score_values.items():
         field_lower = field.lower()
         is_requirement = ("requirement" in field_lower or "qualification" in field_lower) and "preferred" not in field_lower
