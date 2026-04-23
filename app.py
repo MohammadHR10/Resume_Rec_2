@@ -1813,8 +1813,12 @@ EVALUATION RULES:
             if hasattr(eval_data, 'custom_considerations') and eval_data.custom_considerations:
                 considerations_list = []
                 for item in eval_data.custom_considerations:
-                    status = "APPLIED" if item.applied else "NOT APPLIED"
-                    considerations_list.append(f"{item.field} → {status} | Instruction: {item.instruction} | Impact: {item.impact}")
+                    if isinstance(item, dict):
+                        status = "APPLIED" if item.get("applied") else "NOT APPLIED"
+                        considerations_list.append(f"{item.get('field','')} → {status} | Instruction: {item.get('instruction','')} | Impact: {item.get('impact','')}")
+                    else:
+                        status = "APPLIED" if item.applied else "NOT APPLIED"
+                        considerations_list.append(f"{item.field} → {status} | Instruction: {item.instruction} | Impact: {item.impact}")
                 considerations_text = "\n".join(considerations_list)
             
             ws.cell(row=row_num, column=col, value=considerations_text).border = border
