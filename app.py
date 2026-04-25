@@ -2391,6 +2391,30 @@ EVALUATION RULES:
                 else:
                     st.info("Arbiter confirmed both models agree — no adjustments needed.")
 
+                # Display final arbiter-adjusted results for each candidate
+                st.divider()
+                st.subheader("📋 Final Results (after GPT 120b arbiter review)")
+                for idx, eval_item in enumerate(st.session_state.evaluations):
+                    eval_obj = eval_item["evaluation"]
+                    fn = eval_item.get("resume_filename", f"Candidate {idx+1}")
+                    with st.expander(f"📄 {fn} — Overall: {eval_obj.overall_score} | {eval_obj.recommendation}", expanded=False):
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            st.metric("Key Strengths", f"{eval_obj.key_strengths_score}")
+                            st.metric("Experience", f"{eval_obj.experience_score}")
+                            st.metric("Skills Match", f"{eval_obj.skills_match_score}")
+                            for field in st.session_state.custom_fields:
+                                fname = field['name'].strip().replace(' ', '_').lower()
+                                label = field['name'].replace('_', ' ').title()
+                                sval = getattr(eval_obj, f"{fname}_score", None)
+                                if sval is not None:
+                                    st.metric(label, f"{sval}")
+                        with c2:
+                            st.write(f"**Candidate:** {eval_obj.candidate_name}")
+                            st.write(f"**Overall Score:** {eval_obj.overall_score}")
+                            st.info(f"**Recommendation:** {eval_obj.recommendation}")
+                            st.caption(f"💭 {eval_obj.overall_explanation}")
+
             # After all evaluations, offer Excel download if we have results
             if st.session_state.evaluations:
                 st.divider()
