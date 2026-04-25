@@ -1776,10 +1776,8 @@ EVALUATION RULES:
             col += 1
             ws.cell(row=row_num, column=col, value=eval_data.recommendation).border = border
             col += 1
-            rec_expl = getattr(eval_data, 'recommendation_explanation', None)
-            if rec_expl is None and isinstance(eval_data, dict):
-                rec_expl = eval_data.get('recommendation_explanation', '')
-            ws.cell(row=row_num, column=col, value=rec_expl or '').border = border
+            rec_expl = getattr(eval_data, 'overall_explanation', None) or ''
+            ws.cell(row=row_num, column=col, value=rec_expl).border = border
             col += 1
             ws.cell(row=row_num, column=col, value=eval_data.key_strengths_score).border = border
             col += 1
