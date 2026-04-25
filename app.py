@@ -85,8 +85,8 @@ def _reset_evidence_cache() -> None:
 
 # ---------- Post-processing: deterministic business rules ----------
 
-def _compute_recommendation(overall, scale: list, best, worst) -> str:
-    """Deterministically map overall_score → Recommended / Consider / Pass.
+def _compute_recommendation(overall, scale: list, best, worst) -> tuple:
+    """Deterministically map overall_score → (Recommended/Consider/Pass, explanation).
 
     Works with ANY scoring format the LLM declares:
       - Numeric (1-5, 1-100, 0-10, …): uses ratio = (score-worst)/(best-worst)
@@ -97,7 +97,20 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
       ratio ≥ 0.70  →  Recommended
       ratio ≥ 0.40  →  Consider
       ratio <  0.40  →  Pass
+
+    Returns (recommendation, explanation).
     """
+    def _label(ratio, overall_str, scale_str):
+        if ratio >= 0.70:
+            return ("Recommended",
+                    f"Overall score {overall_str} is at {ratio:.0%} of the {scale_str} scale (>=70% threshold for Recommended)")
+        elif ratio >= 0.40:
+            return ("Consider",
+                    f"Overall score {overall_str} is at {ratio:.0%} of the {scale_str} scale (40-69% range → Consider)")
+        else:
+            return ("Pass",
+                    f"Overall score {overall_str} is at {ratio:.0%} of the {scale_str} scale (<40% threshold → Pass)")
+
     # --- Try numeric comparison first ---
     try:
         num_overall = float(overall)
@@ -105,14 +118,9 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
         num_worst = float(worst)
         total_range = num_best - num_worst
         if total_range == 0:
-            return "Consider"
+            return ("Consider", f"Overall score {overall} — scale has zero range ({worst} to {best}), defaulting to Consider")
         ratio = (num_overall - num_worst) / total_range
-        if ratio >= 0.70:
-            return "Recommended"
-        elif ratio >= 0.40:
-            return "Consider"
-        else:
-            return "Pass"
+        return _label(ratio, str(overall), f"{worst}-{best}")
     except (ValueError, TypeError):
         pass
 
@@ -124,21 +132,17 @@ def _compute_recommendation(overall, scale: list, best, worst) -> str:
             idx = scale_lower.index(overall_lower)
             total = len(scale_lower)
             ratio = idx / max(total - 1, 1)
-            if ratio >= 0.70:
-                return "Recommended"
-            elif ratio >= 0.40:
-                return "Consider"
-            else:
-                return "Pass"
+            scale_str = "/".join(str(s) for s in scale)
+            return _label(ratio, str(overall), scale_str)
 
     # --- Fallback: direct match against best/worst ---
     overall_lower = str(overall).lower()
     if overall_lower == str(best).lower():
-        return "Recommended"
+        return ("Recommended", f"Overall score {overall} matches the best value ({best}) → Recommended")
     elif overall_lower == str(worst).lower():
-        return "Pass"
+        return ("Pass", f"Overall score {overall} matches the worst value ({worst}) → Pass")
 
-    return "Consider"
+    return ("Consider", f"Overall score {overall} could not be positioned in the scale — defaulting to Consider")
 
 
 def apply_business_rules(data: dict) -> dict:
@@ -178,7 +182,9 @@ def apply_business_rules(data: dict) -> dict:
     # --- Step 2: Deterministic recommendation from overall_score ---
     overall = data.get("overall_score")
     if overall is not None and best is not None and worst is not None:
-        data["recommendation"] = _compute_recommendation(overall, scale, best, worst)
+        rec, rec_explanation = _compute_recommendation(overall, scale, best, worst)
+        data["recommendation"] = rec
+        data["recommendation_explanation"] = rec_explanation
 
     # --- Step 3: Requirements override (can still force Pass) ---
     for field, val in score_values.items():
@@ -187,6 +193,7 @@ def apply_business_rules(data: dict) -> dict:
         if is_requirement and worst is not None:
             if str(val).lower() == str(worst).lower():
                 data["recommendation"] = "Pass"
+                data["recommendation_explanation"] = f"Overridden to Pass: {field} scored {val} (worst on scale)"
                 data["overall_score"] = worst
                 break
             try:
@@ -196,6 +203,7 @@ def apply_business_rules(data: dict) -> dict:
                 midpoint = (num_best + num_worst) / 2
                 if num_val < midpoint:
                     data["recommendation"] = "Pass"
+                    data["recommendation_explanation"] = f"Overridden to Pass: {field} scored {val} (below midpoint {midpoint})"
                     data["overall_score"] = worst if isinstance(worst, (int, float)) else val
                     break
             except (ValueError, TypeError):
@@ -1109,6 +1117,7 @@ BASE_FIELDS: Dict[str, Tuple[Type[Any], Any]] = {
 
     'potential_concerns': (List[str], ...),
     'recommendation': (str, ...),
+    'recommendation_explanation': (Optional[str], Field(default=None)),
 
     'candidate_name': (str, ...),
     'job_title': (str, ...),
@@ -1644,7 +1653,7 @@ EVALUATION RULES:
         # Create comprehensive headers
         score_headers = [
             "Candidate Name", "Job Title", "Department", "Overall Score", "Recommendation",
-            "Key Strengths Score", "Experience Score", "Skills Match Score"
+            "Recommendation Explanation", "Key Strengths Score", "Experience Score", "Skills Match Score"
         ]
         
         explanation_headers = [
@@ -1766,6 +1775,11 @@ EVALUATION RULES:
             ws.cell(row=row_num, column=col, value=eval_data.overall_score).border = border
             col += 1
             ws.cell(row=row_num, column=col, value=eval_data.recommendation).border = border
+            col += 1
+            rec_expl = getattr(eval_data, 'recommendation_explanation', None)
+            if rec_expl is None and isinstance(eval_data, dict):
+                rec_expl = eval_data.get('recommendation_explanation', '')
+            ws.cell(row=row_num, column=col, value=rec_expl or '').border = border
             col += 1
             ws.cell(row=row_num, column=col, value=eval_data.key_strengths_score).border = border
             col += 1
