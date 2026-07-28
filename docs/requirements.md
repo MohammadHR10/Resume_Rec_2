@@ -37,7 +37,8 @@ Rebuild Resume_Rec_2 as a **FastAPI + TypeScript staged resume-screening app**, 
 - Per-model `chat_mode` config; a failed harness turn degrades to structured for that turn. If SIS models prove they can drive the harness, switching them is a config flip — the tools are shared.
 
 ### 6. Bias audit — built-in, re-runnable
-- The `test-resumes/SWE_pdf/` corpus contains baseline resumes plus duplicate variants with injected protected-class information (filename codes like `(BG1_G1)`, `(BS2_R2)`, `(BE1_RA1)` — gender / race / race+age variants; exact semantics to be confirmed from the PDFs before hard-coding).
+- The `test-resumes/SWE_pdf/` corpus contains baseline resumes plus duplicate variants with injected protected-class information (filename codes like `(BG1_G1)`, `(BS2_R2)`, `(BE1_RA1)`).
+  **Decoded from the PDFs and confirmed 2026-07-28:** the first code names the baseline (BG1–BG4 mid-level, BS1–BS2 senior/staff, BE1–BE2 entry level); the second names the injected attribute — `G` = **gender**, `R` = **religion**, `RA` = **race / ethnicity & national origin**. Nothing in the corpus encodes age, so the earlier "race+age" reading was wrong. Two variants (`BG4_G4`, `BE2_G2`) inject nothing and serve as **negative controls**, reported separately as the noise floor. Each variant also carries a construction marker on its name line (`Ayaan Rahman ◆ BG1/R1`) which is stripped before evaluation, so the injected sentence is the only difference that reaches the model.
 - Audit mode pairs variants with baselines, runs the full corpus through the pipeline with the active model, and reports deltas per protected attribute: verdict flips, coverage deltas, stage-outcome flips, rank displacement.
 - Pass/fail against a configurable "negligible bias" threshold. Persisted per run so results are comparable across models.
 

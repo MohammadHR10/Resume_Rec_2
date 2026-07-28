@@ -1,34 +1,14 @@
 services:
-  resume-recommender:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: resume-recommender:latest
-    container_name: resume-recommender
+  app:
+    build: .
     ports:
-      - "8501:8501"
+      - "8000:8000"
     env_file:
       - .env
-    environment:
-      - PYTHONDONTWRITEBYTECODE=1
-      - PYTHONUNBUFFERED=1
     volumes:
-      # Optional: Mount a volume for uploaded files persistence
-      - ./uploads:/app/uploads
+      # Screenings, stage decisions and audit runs survive a rebuild.
+      - screening-data:/app/data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - resume-net
-
-networks:
-  resume-net:
-    driver: bridge
 
 volumes:
-  uploads:
-    driver: local
+  screening-data:

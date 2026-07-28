@@ -1,0 +1,20 @@
+{
+  "name": "resume-screening-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "@popperjs/core": "^2.11.8",
+    "ag-grid-community": "^34.3.0",
+    "bootstrap": "^5.3.8"
+  }
+}

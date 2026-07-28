@@ -154,9 +154,9 @@ Phases are sequential by default (each builds on the previous), but Phase 6 step
 
 ## Open items (blocking specific steps only)
 
-| # | Item | Blocks | Working assumption |
-|---|------|--------|--------------------|
-| 1 | SIS fastLLM gateway URL, auth, API flavor, model list | Phase 1 step 3 going live; also determines whether SIS models can drive the codex CLI harness (needs an OpenAI-compatible endpoint for `OPENAI_BASE_URL`) | OpenAI-compatible; stub ships behind the interface |
-| 2 | Claude/Codex CLI availability + auth inside the app container (via UL AI proxy creds) | Phase 5 Mode A | Same container-side CLI + proxy pattern already used by frame-main |
-| 3 | "Negligible" bias threshold | Phase 6 pass/fail line | Configurable; proposed default in Phase 6 step 3 |
-| 4 | SWE_pdf filename code semantics | Phase 6 pairing map | Reverse-engineer from PDF text, confirm with user before hard-coding |
+| # | Item | Blocks | Status |
+|---|------|--------|--------|
+| 1 | SIS fastLLM gateway URL, auth, API flavor, model list | Phase 1 step 3 going live; also determines whether SIS models can drive the codex CLI harness (needs an OpenAI-compatible endpoint for `OPENAI_BASE_URL`) | **Still open.** Shipped as an OpenAI-compatible client behind the interface; every assumption is isolated in `backend/llm/fastllm.py`, so a correction is one file. Set `FASTLLM_BASE_URL`/`FASTLLM_API_KEY` to activate. |
+| 2 | Claude/Codex CLI availability + auth inside the app container (via UL AI proxy creds) | Phase 5 Mode A | **Still open.** Adapters ship and route by env override; neither CLI is installed in the image yet, so harness turns degrade to structured until one is added. |
+| 3 | "Negligible" bias threshold | Phase 6 pass/fail line | **Settled 2026-07-28:** zero stage-outcome flips, mean absolute coverage delta ≤ 0.5 qualifications. Stored in config and editable on the Configuration page. |
+| 4 | SWE_pdf filename code semantics | Phase 6 pairing map | **Settled 2026-07-28:** `G` = gender, `R` = religion, `RA` = race/ethnicity & national origin; no age signal. `BG4_G4` and `BE2_G2` are negative controls. See `requirements.md` §6 and `backend/audit.py`. |

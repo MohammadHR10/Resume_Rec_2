@@ -1,12 +1,24 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) working in this repository.
 
 ## What this is
 
-A Streamlit app that evaluates PDF resumes against a job description using the Mistral AI chat API, plus a second tab that classifies cover letters as AI-generated vs. human-written. Results are validated with Pydantic and exported as styled Excel reports.
+A **staged resume screening app**: FastAPI + SQLite backend, Vite/TypeScript/Bootstrap
+frontend with AG Grid. A hiring reviewer drops in a position-description PDF, edits the
+qualification checklist the LLM extracted from it, uploads resumes, and then walks
+candidates through a three-stage human-gated funnel. A per-stage chat answers open-ended
+questions about the results, and a built-in bias audit measures whether disclosing a
+protected characteristic changes any outcome.
 
-**A full rebuild is planned** (FastAPI + TypeScript staged-screening app modeled on the sibling `ResumeAI` repo). Read `docs/requirements.md` (scope and decisions — single source of truth) and `docs/implementation-plan.md` (phased build) before doing anything. The Streamlit code described below gets **deleted outright** in the rebuild's Phase 0 (git history on `main` is the archive), so don't invest in it.
+`docs/requirements.md` is the single source of truth for scope; `docs/implementation-plan.md`
+records how it was built and what is still open; `docs/backlog.md` lists what was
+deliberately dropped from the Streamlit-era app.
+
+**The division of labour is the whole design.** The model produces exactly one thing: a
+per-qualification verdict (`Meets` / `Partial` / `No`) with evidence quoted from the resume.
+Every number a human acts on — coverage rollups, the stage-1 pass recommendation, the rank
+order, what-if analysis — is computed in Python. Do not move any of that into a prompt.
 
 ## Commands
 
@@ -14,41 +26,89 @@ A Streamlit app that evaluates PDF resumes against a job description using the M
 # Setup
 python -m venv venv
 venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+copy .env.example .env      # then fill in the provider credentials
 
-# Run the app (primary entry point)
-streamlit run app.py            # http://localhost:8501
+# Backend (serves ../dist when it exists)
+uvicorn backend.server:app --reload --port 8000
 
-# Docker
-docker compose up --build       # dev, port 8501
-docker compose -f docker-compose.prod.yaml up   # prod, port 80 + optional nginx profile
+# Frontend dev server (proxies /api to :8000)
+cd frontend && npm install && npm run dev     # http://localhost:5173
+
+# Frontend production build -> ./dist, served by FastAPI at :8000
+cd frontend && npm run build
+
+# Tests
+python -m pytest                # all deterministic logic; no LLM calls
+
+# Docker (multi-stage: Node builds the frontend, Python serves it)
+docker compose up --build       # http://localhost:8000
 ```
-
-Requires a `.env` file in the repo root with `mistral_api=<key>` (note the lowercase, non-standard variable name — loaded in `mistral_client.py`).
-
-There is no test framework or linter configured. `test_api.py` is a manual script that hits a locally running API with a real PDF; it is not runnable via pytest.
 
 ## Architecture
 
-Almost everything lives in `app.py` (~1550 lines), which is both the Streamlit script and the home of the core domain logic. It renders two tabs:
+### Backend (`backend/`)
 
-1. **Resume Analysis** (`with tab1:`) — the main flow:
-   - User enters job details, optional custom evaluation fields (string/boolean), and custom scoring criteria definitions (kept in `st.session_state`).
-   - PDFs are collected from individual uploads and/or a ZIP archive (`process_uploaded_files`), text extracted via `pdf_extract.py` (pdfminer.six).
-   - Optional anonymization: `anonymize_text` / `extract_personal_info` redact names, contact info, schools, etc. before the text is sent to the AI; a separate Excel mapping report links placeholders back to originals.
-   - A Pydantic model is built **dynamically per run** with `build_dynamic_model(custom_fields)` — `BASE_FIELDS` (scores 1–5, explanations, recommendation of `Recommended | Consider | Pass`) plus `<field>`, `<field>_score`, `<field>_explanation` for each custom field, with `extra: "forbid"`.
-   - The prompt (`build_eval_prompt` + `schema_text`, both defined inside the tab1 block) instructs Mistral to return JSON matching that schema. The raw response goes through `clean_json_output` (smart quotes, trailing commas, control chars) before validation.
-   - Validated evaluations are rendered and exported to Excel (`create_excel_report`, styled via openpyxl, sized with `adjust_sheet_dimensions`).
+- **`server.py`** — every API route, plus the static mount for `dist/`. Thin: it validates,
+  delegates, and shapes responses. Background work (`evaluate`, `audits`) is an
+  `asyncio.create_task` writing progress into `pipeline.JOBS` for the polling endpoint.
+- **`db.py`** — raw `sqlite3`, connection per unit of work, schema in one `SCHEMA` string.
+  Tables: `screening`, `qualification`, `candidate`, `evaluation`, `stage_state`,
+  `stage_action`, `config`, `chat_session`, `chat_message`, `chat_action`, `audit_run`.
+  Config is a key/value table holding JSON — **non-secret selections only**; credentials
+  stay in the environment.
+- **`llm/`** — `base.py` holds the provider interface (`structured_extract`, `chat`) and the
+  shared OpenAI-compatible client with retry/backoff, strict-schema coercion, and an
+  automatic demotion to prompt-instructed JSON when a gateway rejects `response_format`.
+  `ulproxy.py` and `fastllm.py` are configuration only. `registry.py` resolves the active
+  provider from stored config on every call, so a config change takes effect without a restart.
+- **`jd_parse.py`** — position description → itemized qualifications. One atomic,
+  verdict-able item per entry; compound bullets get split.
+- **`pipeline.py`** — the core. `evaluate_resume` (one LLM call per candidate),
+  `compute_rollups`, `rank_candidates`, batching with progress, and `load_rows` (the one
+  query everything reads a screening through).
+- **`chat/`** — `session.py` picks the mode and degrades a failed harness turn to structured
+  *for that turn*; `workspace.py` builds the per-session scratch dir (snapshot, brief, copied
+  tools, action queue); `structured.py` is the in-code agentic loop; `adapters/` are the CLI
+  seams; `tools/` are standalone scripts run identically by both modes.
+- **`audit.py`** — corpus pairing, delta computation, per-attribute aggregation, pass/fail.
+- **`export.py`** — styled Excel and CSV per stage grid.
 
-2. **Cover Letter Analysis** (`with tab2:`) — logic lives in `cover_letter_analyzer.py`: `analyze_cover_letter_with_ai` returns an AI-generated-probability classification validated against `CoverLetterAnalysis`, with its own JSON cleaner and Excel report builder.
+### Frontend (`frontend/src/`)
 
-Supporting modules:
-- `mistral_client.py` — single `call_mistral(prompt)` function; plain `requests` POST to `mistral-small-latest`, no SDK despite `mistralai` being in requirements.
-- `pdf_extract.py` — `extract_text_from_pdf(file_like)` wrapper around pdfminer.
+Vanilla TypeScript, no framework. `main.ts` is a hash router plus the screening workflow;
+`api.ts` is the only place that talks HTTP; each view is one module (`configPage`, `jdIntake`,
+`stageGrid`, `chatPanel`, `auditPage`). `tsconfig.json` sets `erasableSyntaxOnly`, so
+**constructor parameter properties do not compile** — declare fields explicitly.
 
-## Known landmines
+## Things worth knowing before you change something
 
-- **`main.py` (FastAPI) is stale/broken.** It does `from app import Evaluation, build_eval_prompt`, but `Evaluation` no longer exists in `app.py` (replaced by the dynamic `build_dynamic_model`), and importing `app` would execute the whole Streamlit script anyway. `test_api.py` likewise targets endpoints (`/health`, `/batch_recommend`) that `main.py` never defined. The README describes this API as working; treat the Streamlit app as the only functioning interface unless the task is to fix the API.
-- `enhanced_client.py` is empty; `fix_indentation.py` is a one-off repair script — neither is part of the app.
-- The AI response parsing is regex-based JSON extraction, not structured output; changes to `BASE_FIELDS` or the prompt schema must be kept in sync with `schema_text`/`build_eval_prompt`, or validation will fail at runtime.
-- The Dockerfile only runs Streamlit (port 8501); nothing serves the FastAPI app in containers.
+- **AG Grid v34 themes via the Theming API, not CSS.** The header's fill and weight come from
+  `screeningTheme` in `stageGrid.ts`. A stylesheet rule targeting `.ag-header` loses to the
+  generated styles; change the theme params instead.
+- **Editing a confirmed checklist deletes that screening's evaluations.** Verdicts key off
+  qualification ids, so a changed list makes them unreadable. `update_qualifications` clears
+  them deliberately rather than mismapping them — do not "fix" this by trying to match on text.
+- **A failed evaluation is stored, not skipped.** `store_failure` writes a row with zero
+  coverage and an error message, so nobody silently vanishes from a hiring grid.
+- **A missing verdict counts as unmet**, never as a smaller denominator. A model that skips
+  an item must not make that candidate look better than one that answered it.
+- **`candidate_key` has two modes.** `LastName, FirstName …` filenames group a resume and a
+  cover letter together; everything else uses the whole stem, because truncating names like
+  `Resume_31_(BG1_R1)Ayaan_Rahman` would collide every audit variant.
+- **Chat tools import the real ranking code.** The copied tools in a workspace find
+  `backend/` through a generated `tools/_bootstrap.py`. That is what makes what-if a true
+  recompute rather than a second implementation that can drift.
+- **Grid actions travel by file.** `grid_action.py` appends to `actions.jsonl` in the
+  workspace; the backend drains it into `chat_action` after each turn. No credentials needed
+  inside the workspace, and it works identically in both chat modes.
+- **The audit strips the corpus's construction marker** (`◆ BG1/R1`) before evaluating.
+  Without that, every variant carries one identical artifact no baseline has.
+
+## Currently open
+
+- **SIS fastLLM gateway** connection details have not arrived. It ships as an
+  OpenAI-compatible client; every assumption lives in `backend/llm/fastllm.py`.
+- **Neither CLI harness is installed in the image.** `chat_mode: harness` therefore degrades
+  to structured on every turn (surfaced in the UI). Adding `claude` or `codex` to the
+  Dockerfile plus proxy credentials is all that is missing.

@@ -1,0 +1,145 @@
+:root {
+  --verdict-meets: #c6efce;
+  --verdict-meets-text: #0b6122;
+  --verdict-partial: #ffeb9c;
+  --verdict-partial-text: #7a4a00;
+  --verdict-no: #ffc7ce;
+  --verdict-no-text: #9c0006;
+}
+
+body {
+  background-color: #f6f7f9;
+}
+
+.navbar-brand {
+  font-weight: 600;
+}
+
+#alert-strip {
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+}
+
+/* Dropzones ---------------------------------------------------------------- */
+
+.dropzone {
+  border: 2px dashed #adb5bd;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone-active {
+  border-color: var(--bs-primary);
+  background-color: rgba(13, 110, 253, 0.06);
+}
+
+/* Qualification checklists -------------------------------------------------- */
+
+.qual-list .qual-text {
+  outline: none;
+  border-bottom: 1px dashed transparent;
+  min-width: 4rem;
+}
+
+.qual-list .qual-text:focus {
+  border-bottom-color: var(--bs-primary);
+}
+
+/* Stage grid ---------------------------------------------------------------- */
+
+.stage-grid {
+  width: 100%;
+  height: 520px;
+}
+
+/* The header's fill, weight and text colour come from the Theming API in
+   stageGrid.ts; only the icons need a nudge to stay legible on the dark fill. */
+.stage-grid .ag-header-cell .ag-icon,
+.stage-grid .ag-header-cell .ag-sort-indicator-icon {
+  color: #ffffff;
+}
+
+.stage-grid .ag-header-cell-text {
+  line-height: 1.2;
+}
+
+.verdict-meets {
+  background-color: var(--verdict-meets);
+  color: var(--verdict-meets-text);
+  font-weight: 600;
+}
+
+.verdict-partial {
+  background-color: var(--verdict-partial);
+  color: var(--verdict-partial-text);
+  font-weight: 600;
+}
+
+.verdict-no {
+  background-color: var(--verdict-no);
+  color: var(--verdict-no-text);
+  font-weight: 600;
+}
+
+.verdict-missing {
+  color: #6c757d;
+}
+
+.verdict-evidence-dot {
+  opacity: 0.55;
+}
+
+.audit-control-row {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* Chat ---------------------------------------------------------------------- */
+
+.chat-log {
+  height: 460px;
+  overflow-y: auto;
+}
+
+.chat-message {
+  margin-bottom: 0.85rem;
+}
+
+.chat-meta {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6c757d;
+  margin-bottom: 0.15rem;
+}
+
+.chat-body {
+  white-space: pre-wrap;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  background-color: #f1f3f5;
+}
+
+.chat-user .chat-body {
+  background-color: #e7f1ff;
+}
+
+.chat-note {
+  font-size: 0.78rem;
+  margin-top: 0.25rem;
+}
+
+.chat-suggestion {
+  font-size: 0.75rem;
+}
+
+/* Progress log -------------------------------------------------------------- */
+
+.progress-log {
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

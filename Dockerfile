@@ -1,27 +1,37 @@
-# Use Python 3.11 slim image as base
-FROM python:3.11-slim
+# Stage 1 — build the frontend
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+COPY frontend/ ./
+RUN npx vite build
 
-# Set working directory in container
+# Stage 2 — Python runtime serving the API and the built frontend
+FROM python:3.12-slim
 WORKDIR /app
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# The chat harness adapters shell out to the claude/codex CLIs when chat is in
+# harness mode. They are optional: without them a harness turn degrades to the
+# structured loop, which needs nothing beyond Python.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file first to leverage Docker cache
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+COPY backend/ ./backend/
+COPY test-resumes/ ./test-resumes/
+COPY --from=frontend-build /app/dist ./dist
 
-# Copy .env file if it exists
-COPY .env* ./
+# SQLite and the per-session chat workspaces; mount a volume over this to keep
+# screenings across container rebuilds.
+RUN mkdir -p /app/data
+ENV SCREENING_DB=/app/data/screening.db \
+    CHAT_WORKSPACE_ROOT=/app/data/chat \
+    AUDIT_CORPUS_DIR=/app/test-resumes/SWE_pdf \
+    PYTHONUNBUFFERED=1
 
-# Expose the port Streamlit runs on
-EXPOSE 8501
+EXPOSE 8000
 
-# Command to run the Streamlit application
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
