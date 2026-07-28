@@ -73,8 +73,24 @@ export interface ProviderCard {
   baseUrl: string;
 }
 
+export interface ConnectionCard {
+  provider: string;
+  label: string;
+  baseUrl: string;
+  baseUrlSource: "config" | "environment" | "unset";
+  hasKey: boolean;
+  /** A masked hint only — the token itself is never sent to the browser. */
+  keyHint: string;
+  keySource: "config" | "environment" | "unset";
+  projectId: string;
+  requesterId: string;
+  supportsAttribution: boolean;
+  configured: boolean;
+}
+
 export interface AppConfig {
   providers: ProviderCard[];
+  connections: ConnectionCard[];
   provider: string;
   model: string;
   chatMode: "harness" | "structured";

@@ -55,8 +55,12 @@ docker compose up --build       # http://localhost:8000
 - **`db.py`** — raw `sqlite3`, connection per unit of work, schema in one `SCHEMA` string.
   Tables: `screening`, `qualification`, `candidate`, `evaluation`, `stage_state`,
   `stage_action`, `config`, `chat_session`, `chat_message`, `chat_action`, `audit_run`.
-  Config is a key/value table holding JSON — **non-secret selections only**; credentials
-  stay in the environment.
+  Config is a key/value table holding JSON, including the `connections` key, which **may
+  hold a provider bearer token** entered on the configuration page. A stored value overrides
+  the environment. The token is write-only over the API — `GET /api/config` returns only
+  `hasKey` and a masked hint — and `chat/workspace.py` strips the `config` table from the
+  database copy handed to a chat harness. If you add another consumer of the database file,
+  check whether it needs the same treatment.
 - **`llm/`** — `base.py` holds the provider interface (`structured_extract`, `chat`) and the
   shared OpenAI-compatible client with retry/backoff, strict-schema coercion, and an
   automatic demotion to prompt-instructed JSON when a gateway rejects `response_format`.

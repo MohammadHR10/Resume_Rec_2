@@ -122,10 +122,16 @@ docker compose up --build   # http://localhost:8000
 Node builds the frontend in the first stage; Python serves the API and the built assets in
 the second. Screenings, stage decisions and audit runs live in the `screening-data` volume.
 
-### Environment
+### Credentials
 
-All secrets live in `.env`; the app's config table stores only which non-secret
-provider/model is selected. See `.env.example` for the full list.
+Two ways to supply them, and the Configuration page wins when both are present:
+
+1. **Configuration page → Provider connections** — enter the gateway URL and bearer token in
+   the browser. They are stored in the application database. The token is write-only: it is
+   never sent back to the browser, only a masked hint, and it is stripped from the database
+   copy a chat harness is given. **The app has no login of its own**, so anyone who can reach
+   the page can use the credentials — put it behind your normal access controls.
+2. **`.env`** — the deployment-friendly route, and what Docker uses. See `.env.example`.
 
 | Variable | Purpose |
 |----------|---------|

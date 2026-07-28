@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 
@@ -94,6 +95,28 @@ def test_workspace_contains_the_snapshot_tools_and_brief(ws):
     snapshot = json.loads((ws / "snapshot.json").read_text(encoding="utf-8"))
     assert [q["label"] for q in snapshot["qualifications"]] == ["R1", "R2", "P1"]
     assert len(snapshot["candidates"]) == 3
+
+
+def test_the_workspace_database_carries_no_credentials(screening):
+    """The workspace is handed to a CLI agent, so the config table — which can
+    hold a provider's bearer token — must not travel with it."""
+    db.set_connection("fastllm", {"base_url": "https://gw.example", "api_key": "secret-token-42"})
+    path = workspace.build_workspace("secrets-session", screening, "1")
+
+    copied = path / "screening.db"
+    assert copied.exists(), "the workspace should still get a database"
+
+    connection = sqlite3.connect(str(copied))
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM config").fetchone()[0] == 0
+        # The audit trail it exists for is still there.
+        assert connection.execute("SELECT COUNT(*) FROM candidate").fetchone()[0] == 3
+    finally:
+        connection.close()
+
+    assert b"secret-token-42" not in copied.read_bytes()
+    # The real database still has it.
+    assert db.get_connection("fastllm")["api_key"] == "secret-token-42"
 
 
 def test_the_brief_states_the_rules_the_model_must_not_invent(ws):

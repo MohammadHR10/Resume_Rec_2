@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import db, server
+from backend.llm import registry
 
 CORPUS = Path(__file__).resolve().parent.parent / "test-resumes" / "SWE_pdf"
 
@@ -126,6 +127,105 @@ def test_config_round_trips(client):
 
 def test_config_rejects_an_unknown_provider(client):
     assert client.put("/api/config", json={"provider": "nope"}).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Provider connections entered in the UI
+# ---------------------------------------------------------------------------
+
+def _connection(payload: dict, provider: str) -> dict:
+    return next(c for c in payload["connections"] if c["provider"] == provider)
+
+
+def test_a_connection_saved_in_the_ui_is_used_for_calls(client):
+    client.put(
+        "/api/config",
+        json={
+            "connection": {
+                "provider": "fastllm",
+                "baseUrl": "https://gateway.example/v1",
+                "apiKey": "gw-secret-token-1234",
+                "projectId": "proj-7",
+                "requesterId": "dastewart",
+            }
+        },
+    )
+    provider = registry.get_provider("fastllm")
+    assert provider.base_url == "https://gateway.example/v1"
+    assert provider.api_key == "gw-secret-token-1234"
+    assert provider.extra_headers() == {"hl-project-id": "proj-7", "hl-requester-id": "dastewart"}
+    assert provider.is_configured() is True
+
+
+def test_the_token_is_never_returned_to_the_browser(client):
+    client.put(
+        "/api/config",
+        json={
+            "connection": {
+                "provider": "fastllm",
+                "baseUrl": "https://gateway.example/v1",
+                "apiKey": "gw-secret-token-1234",
+            }
+        },
+    )
+    response = client.get("/api/config")
+    assert "gw-secret-token-1234" not in response.text
+
+    card = _connection(response.json(), "fastllm")
+    assert card["hasKey"] is True
+    assert card["keyHint"] == "••••••••1234"
+    assert card["keySource"] == "config"
+
+
+def test_a_blank_token_keeps_the_stored_one(client):
+    base = {"provider": "fastllm", "baseUrl": "https://gateway.example/v1"}
+    client.put("/api/config", json={"connection": {**base, "apiKey": "original-token"}})
+    # The UI submits the form again without re-typing the token.
+    client.put("/api/config", json={"connection": {**base, "baseUrl": "https://moved.example/v1"}})
+
+    provider = registry.get_provider("fastllm")
+    assert provider.api_key == "original-token"
+    assert provider.base_url == "https://moved.example/v1"
+
+
+def test_an_empty_string_clears_the_stored_token(client):
+    base = {"provider": "fastllm", "baseUrl": "https://gateway.example/v1"}
+    client.put("/api/config", json={"connection": {**base, "apiKey": "original-token"}})
+    client.put("/api/config", json={"connection": {**base, "apiKey": ""}})
+    assert registry.get_provider("fastllm").api_key == ""
+
+
+def test_a_stored_connection_overrides_the_environment(client, monkeypatch):
+    monkeypatch.setenv("ULMAIPROXY_BASE_URL", "https://from-env.example")
+    assert _connection(client.get("/api/config").json(), "ulproxy")["baseUrlSource"] == "environment"
+
+    client.put(
+        "/api/config",
+        json={"connection": {"provider": "ulproxy", "baseUrl": "https://from-ui.example"}},
+    )
+    card = _connection(client.get("/api/config").json(), "ulproxy")
+    assert card["baseUrl"] == "https://from-ui.example"
+    assert card["baseUrlSource"] == "config"
+
+
+def test_the_environment_still_works_when_nothing_is_stored(client):
+    card = _connection(client.get("/api/config").json(), "ulproxy")
+    assert card["baseUrl"] == "https://proxy.example"
+    assert card["baseUrlSource"] == "environment"
+    assert card["keySource"] == "environment"
+
+
+def test_only_the_gateway_offers_attribution_fields(client):
+    payload = client.get("/api/config").json()
+    assert _connection(payload, "fastllm")["supportsAttribution"] is True
+    assert _connection(payload, "ulproxy")["supportsAttribution"] is False
+
+
+def test_a_connection_for_an_unknown_provider_is_rejected(client):
+    response = client.put(
+        "/api/config", json={"connection": {"provider": "nope", "baseUrl": "https://x"}}
+    )
+    assert response.status_code == 400
 
 
 # ---------------------------------------------------------------------------

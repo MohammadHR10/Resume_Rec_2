@@ -52,7 +52,8 @@ Resume_Rec_2/
 - **candidate** — belongs to screening; name, source filename(s), extracted text
 - **evaluation** — one candidate × one run: per-qual verdicts JSON, rollups (required_met, required_total, preferred_met, preferred_total), overall notes, provider+model tag, timestamp
 - **stage_state** — candidate's current stage (1|2|3|rejected) + audit trail of human promote/reject actions (who/when/optional note)
-- **config** — active provider, model, per-provider base URL/key refs (secrets stay in `.env`; config stores non-secret selections), per-model `chat_mode` (`harness` | `structured`)
+- **config** — active provider, model, per-provider connection details, per-model `chat_mode` (`harness` | `structured`)
+  - *Revised 2026-07-28:* the original plan kept every secret in `.env` and stored only non-secret selections. At the user's request the configuration page now accepts a gateway URL and bearer token directly, so the `connections` config key may hold a token. Consequences handled in code: the token is write-only over the API (`GET /api/config` returns only `hasKey` and a masked hint), a stored value overrides the environment, and `chat/workspace.py` strips the `config` table from the database copy it hands to a chat harness — otherwise the credential would land in a directory an agent is explicitly allowed to read. The app still has no authentication of its own, so reaching the page means being able to use the credentials.
 - **chat_session** — per screening+stage: transcript, mode + model tags, harness resume id (`harness_sid` pattern from hive-edge-minds)
 - **audit_run** — bias audit executions: corpus used, pairings, deltas JSON, provider+model tag
 

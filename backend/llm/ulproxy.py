@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 
+from .. import db
 from .base import OpenAICompatibleProvider
 
 NAME = "ulproxy"
@@ -23,11 +24,12 @@ LABEL = "Azure OpenAI (UL AI proxy)"
 
 
 def base_url() -> str:
-    return os.getenv("ULMAIPROXY_BASE_URL", "").strip()
+    """Connection details entered in the UI win; the environment is the fallback."""
+    return db.get_connection(NAME)["base_url"] or os.getenv("ULMAIPROXY_BASE_URL", "").strip()
 
 
 def auth_token() -> str:
-    return os.getenv("ULMAIPROXY_AUTH_TOKEN", "").strip()
+    return db.get_connection(NAME)["api_key"] or os.getenv("ULMAIPROXY_AUTH_TOKEN", "").strip()
 
 
 class ULProxyProvider(OpenAICompatibleProvider):

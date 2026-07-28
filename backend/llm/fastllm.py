@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from .. import db
 from .base import OpenAICompatibleProvider
 
 NAME = "fastllm"
@@ -54,11 +55,15 @@ def _first_env(*names: str) -> str:
 
 def base_url() -> str:
     """Gateway URL. ``LLM_GATEWAY_URL`` is the name the existing app used."""
-    return _first_env("LLM_GATEWAY_URL", "FASTLLM_BASE_URL")
+    return db.get_connection(NAME)["base_url"] or _first_env(
+        "LLM_GATEWAY_URL", "FASTLLM_BASE_URL"
+    )
 
 
 def api_key() -> str:
-    return _first_env("LLM_GATEWAY_KEY", "LLM_GATEWAY_API_KEY", "FASTLLM_API_KEY")
+    return db.get_connection(NAME)["api_key"] or _first_env(
+        "LLM_GATEWAY_KEY", "LLM_GATEWAY_API_KEY", "FASTLLM_API_KEY"
+    )
 
 
 class FastLLMProvider(OpenAICompatibleProvider):
@@ -71,8 +76,9 @@ class FastLLMProvider(OpenAICompatibleProvider):
             default_model=default_model or _first_env("LLM_MODEL", "FASTLLM_MODEL"),
             supports_json_schema=os.getenv("FASTLLM_JSON_SCHEMA", "1") != "0",
         )
-        self.project_id = _first_env("HL_PROJECT_ID")
-        self.requester_id = _first_env("HL_REQUESTER_ID")
+        stored = db.get_connection(NAME)
+        self.project_id = stored["project_id"] or _first_env("HL_PROJECT_ID")
+        self.requester_id = stored["requester_id"] or _first_env("HL_REQUESTER_ID")
         self.seed = int(_first_env("LLM_SEED") or DEFAULT_SEED)
 
     def is_configured(self) -> bool:

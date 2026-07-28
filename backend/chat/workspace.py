@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -133,12 +134,40 @@ def build_workspace(session_id: str, screening_id: str, stage: str) -> Path:
 
     # A read-only copy of the database, for questions the JSON snapshot cannot
     # answer (audit trail of promotions, prior evaluation runs).
-    try:
-        shutil.copy2(db.DB_PATH, path / "screening.db")
-    except OSError as exc:
-        logger.warning("Could not copy the database into the chat workspace: %s", exc)
+    _copy_database(path / "screening.db")
 
     return path
+
+
+def _copy_database(destination: Path) -> None:
+    """Copy the database for the workspace, without the config table.
+
+    The config table can hold a provider's bearer token (when it was entered in
+    the UI rather than the environment), and this copy is handed to whatever
+    agent the chat harness runs, inside a directory it is explicitly allowed to
+    read. Stripping the table here means a screening chat can still answer
+    questions from the promotion audit trail without the credential ever being
+    somewhere an agent — or anything that agent shells out to — can read it.
+    """
+    try:
+        shutil.copy2(db.DB_PATH, destination)
+    except OSError as exc:
+        logger.warning("Could not copy the database into the chat workspace: %s", exc)
+        return
+
+    try:
+        connection = sqlite3.connect(str(destination))
+        try:
+            connection.execute("DELETE FROM config")
+            connection.commit()
+            connection.execute("VACUUM")
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        # Better no database in the workspace than one that may still hold a
+        # token: the snapshot answers almost everything on its own.
+        logger.error("Could not strip credentials from the workspace database: %s", exc)
+        destination.unlink(missing_ok=True)
 
 
 def brief(snapshot: dict[str, Any], path: Path) -> str:

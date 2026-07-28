@@ -98,12 +98,57 @@ def _stage_counts(screening_id: str) -> dict[str, int]:
 # Configuration
 # ---------------------------------------------------------------------------
 
+class ConnectionUpdate(BaseModel):
+    provider: str
+    baseUrl: str | None = None
+    # None means "leave the stored token alone" — the UI submits the form
+    # without re-typing it. An empty string clears it.
+    apiKey: str | None = None
+    projectId: str | None = None
+    requesterId: str | None = None
+
+
 class ConfigUpdate(BaseModel):
     provider: str | None = None
     model: str | None = None
     chatMode: str | None = None
     harnessCli: str | None = None
     auditThresholds: dict[str, float] | None = None
+    connection: ConnectionUpdate | None = None
+
+
+def _connection_cards() -> list[dict[str, Any]]:
+    """Per-provider connection state for the config page.
+
+    The token is never returned — only whether one is present, a four-character
+    hint so an operator can tell which one it is, and where it came from.
+    """
+    cards = []
+    for name in registry.PROVIDERS:
+        stored = db.get_connection(name)
+        provider = registry.get_provider(name)
+        cards.append(
+            {
+                "provider": name,
+                "label": registry.PROVIDER_LABELS[name],
+                "baseUrl": provider.base_url,
+                "baseUrlSource": _source(stored["base_url"], provider.base_url),
+                "hasKey": bool(provider.api_key),
+                "keyHint": db.mask_secret(provider.api_key),
+                "keySource": _source(stored["api_key"], provider.api_key),
+                "projectId": getattr(provider, "project_id", ""),
+                "requesterId": getattr(provider, "requester_id", ""),
+                "supportsAttribution": hasattr(provider, "project_id"),
+                "configured": provider.is_configured(),
+            }
+        )
+    return cards
+
+
+def _source(stored: str, effective: str) -> str:
+    if stored:
+        return "config"
+    return "environment" if effective else "unset"
 
 
 @app.get("/api/config")
@@ -114,6 +159,7 @@ def get_config() -> dict[str, Any]:
     _, provider_name, model = registry.active()
     return {
         "providers": registry.describe_all(),
+        "connections": _connection_cards(),
         "provider": cfg.get("provider"),
         "model": cfg.get("model"),
         "chatMode": registry.chat_mode(provider_name, model),
@@ -151,7 +197,29 @@ def update_config(body: ConfigUpdate) -> dict[str, Any]:
             **body.auditThresholds,
         }
 
-    db.set_config(updates)
+    if updates:
+        db.set_config(updates)
+
+    if body.connection is not None:
+        if body.connection.provider not in registry.PROVIDERS:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown provider: {body.connection.provider}"
+            )
+        db.set_connection(
+            body.connection.provider,
+            {
+                "base_url": body.connection.baseUrl,
+                "api_key": body.connection.apiKey,
+                "project_id": body.connection.projectId,
+                "requester_id": body.connection.requesterId,
+            },
+        )
+        logger.info(
+            "Updated stored connection for %s (token %s)",
+            body.connection.provider,
+            "changed" if body.connection.apiKey is not None else "unchanged",
+        )
+
     return get_config()
 
 

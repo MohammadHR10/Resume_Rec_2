@@ -222,6 +222,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "provider": "ulproxy",
     "model": "",
     "chat_modes": {},
+    # Per-provider connection details entered in the UI. These override the
+    # environment when set. `api_key` is the one secret the database holds —
+    # it is never returned to a client (see `mask_secret`) and is stripped from
+    # the copy handed to a chat workspace (see chat/workspace.py).
+    "connections": {},
     # "Negligible bias", as agreed: no variant may flip a stage-1 outcome, and
     # the average absolute coverage change stays under half a qualification.
     # Verdict-flip rate is reported but is not a pass/fail criterion — a single
@@ -249,3 +254,49 @@ def set_config(values: dict[str, Any]) -> dict[str, Any]:
                 (key, json.dumps(value)),
             )
     return get_config()
+
+
+# ---------------------------------------------------------------------------
+# Provider connections
+# ---------------------------------------------------------------------------
+
+CONNECTION_FIELDS = ("base_url", "api_key", "project_id", "requester_id")
+
+
+def get_connection(provider: str) -> dict[str, str]:
+    """Stored connection details for a provider; empty strings when unset.
+
+    Tolerant of a database that does not exist yet: a provider object can be
+    constructed before the schema is created (imports, unit tests), and that
+    should fall back to the environment rather than raise.
+    """
+    try:
+        connections = get_config().get("connections") or {}
+    except sqlite3.Error:
+        return {field: "" for field in CONNECTION_FIELDS}
+    entry = connections.get(provider) or {}
+    return {field: str(entry.get(field) or "").strip() for field in CONNECTION_FIELDS}
+
+
+def set_connection(provider: str, values: dict[str, Any]) -> None:
+    """Update stored connection details.
+
+    A field set to ``None`` is left alone; an empty string clears it. That
+    distinction is what lets the UI submit the form without the token field
+    every time — leaving it blank means "keep the one you have", not "erase it".
+    """
+    connections = dict(get_config().get("connections") or {})
+    entry = dict(connections.get(provider) or {})
+    for field, value in values.items():
+        if field not in CONNECTION_FIELDS or value is None:
+            continue
+        entry[field] = str(value).strip()
+    connections[provider] = entry
+    set_config({"connections": connections})
+
+
+def mask_secret(value: str) -> str:
+    """A hint that a token is present without disclosing it."""
+    if not value:
+        return ""
+    return f"{'•' * 8}{value[-4:]}" if len(value) > 8 else "•" * 8

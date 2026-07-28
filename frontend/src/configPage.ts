@@ -6,7 +6,7 @@
  */
 
 import { getConfig, listModels, saveConfig, testProvider } from "./api.ts";
-import type { AppConfig } from "./types.ts";
+import type { AppConfig, ConnectionCard } from "./types.ts";
 import { busy, el, escapeHtml, notify } from "./ui.ts";
 
 export async function renderConfigPage(root: HTMLElement): Promise<void> {
@@ -33,8 +33,169 @@ export async function renderConfigPage(root: HTMLElement): Promise<void> {
   const layout = el("div", "row g-3");
   layout.appendChild(providerCard(config));
   layout.appendChild(chatCard(config));
+  layout.appendChild(connectionCard(config, root));
   layout.appendChild(thresholdCard(config));
   root.appendChild(layout);
+}
+
+/** Endpoint and credentials per provider.
+ *
+ * The token is write-only: the server sends back only whether one is stored
+ * and a four-character hint, so leaving the field blank means "keep the one
+ * you have" rather than "erase it".
+ */
+function connectionCard(config: AppConfig, root: HTMLElement): HTMLElement {
+  const column = el("div", "col-12");
+  const card = el("div", "card");
+  card.appendChild(el("div", "card-header fw-semibold", "Provider connections"));
+  const body = el("div", "card-body");
+  body.appendChild(
+    el(
+      "p",
+      "text-muted small",
+      "Values entered here are stored in the application database and override the environment. Leave the token blank to keep the one already stored. Anyone who can reach this page can use these credentials — put the app behind your normal access controls.",
+    ),
+  );
+
+  const tabs = el("ul", "nav nav-pills mb-3");
+  const panes = el("div");
+
+  config.connections.forEach((connection, index) => {
+    const item = el("li", "nav-item");
+    const tab = el(
+      "button",
+      `nav-link ${index === 0 ? "active" : ""}`,
+      `${escapeHtml(connection.label)} ${
+        connection.configured
+          ? '<span class="badge text-bg-success ms-1">ready</span>'
+          : '<span class="badge text-bg-secondary ms-1">not set</span>'
+      }`,
+    );
+    item.appendChild(tab);
+    tabs.appendChild(item);
+
+    const pane = connectionPane(connection, root);
+    if (index !== 0) pane.classList.add("d-none");
+    panes.appendChild(pane);
+
+    tab.addEventListener("click", () => {
+      tabs.querySelectorAll(".nav-link").forEach((node) => node.classList.remove("active"));
+      tab.classList.add("active");
+      Array.from(panes.children).forEach((node, position) =>
+        node.classList.toggle("d-none", position !== index),
+      );
+    });
+  });
+
+  body.append(tabs, panes);
+  card.appendChild(body);
+  column.appendChild(card);
+  return column;
+}
+
+function connectionPane(connection: ConnectionCard, root: HTMLElement): HTMLElement {
+  const pane = el("div");
+  const grid = el("div", "row g-3");
+
+  const baseUrl = textField(
+    "Gateway URL",
+    connection.baseUrl,
+    connection.provider === "fastllm"
+      ? "https://host/v1 — or the full /v1/chat/completions endpoint"
+      : "https://your-proxy.example",
+    sourceNote(connection.baseUrlSource, "URL"),
+  );
+  grid.appendChild(baseUrl.wrapper);
+
+  const apiKey = textField(
+    "Bearer token",
+    "",
+    connection.hasKey ? `Stored: ${connection.keyHint} — leave blank to keep it` : "Paste the token",
+    connection.hasKey ? sourceNote(connection.keySource, "token") : "No token stored yet.",
+  );
+  apiKey.input.type = "password";
+  apiKey.input.autocomplete = "off";
+  grid.appendChild(apiKey.wrapper);
+
+  let projectId: ReturnType<typeof textField> | null = null;
+  let requesterId: ReturnType<typeof textField> | null = null;
+  if (connection.supportsAttribution) {
+    projectId = textField(
+      "Project ID",
+      connection.projectId,
+      "hl-project-id header",
+      "Sent as the hl-project-id header for routing and quota.",
+    );
+    requesterId = textField(
+      "Requester ID",
+      connection.requesterId,
+      "hl-requester-id header",
+      "Sent as the hl-requester-id header.",
+    );
+    grid.append(projectId.wrapper, requesterId.wrapper);
+  }
+
+  pane.appendChild(grid);
+
+  const buttons = el("div", "d-flex gap-2 mt-3 align-items-center");
+  const save = el("button", "btn btn-primary", "Save connection") as HTMLButtonElement;
+  const test = el("button", "btn btn-outline-secondary", "Save & test") as HTMLButtonElement;
+  const status = el("span", "small text-muted");
+  buttons.append(save, test, status);
+  pane.appendChild(buttons);
+
+  async function persist(button: HTMLButtonElement, thenTest: boolean): Promise<void> {
+    const done = busy(button, thenTest ? "Testing…" : "Saving…");
+    try {
+      await saveConfig({
+        connection: {
+          provider: connection.provider,
+          baseUrl: baseUrl.input.value.trim(),
+          // Only send the token when something was typed, so a blank field
+          // keeps the stored one instead of wiping it.
+          apiKey: apiKey.input.value ? apiKey.input.value : null,
+          projectId: projectId ? projectId.input.value.trim() : null,
+          requesterId: requesterId ? requesterId.input.value.trim() : null,
+        },
+      });
+      apiKey.input.value = "";
+      notify(`${connection.label} connection saved.`, "success");
+
+      if (thenTest) {
+        const result = await testProvider(connection.provider);
+        status.textContent = result.detail;
+        status.className = `small ${result.ok ? "text-success" : "text-danger"}`;
+        notify(`${connection.label}: ${result.detail}`, result.ok ? "success" : "warning");
+      }
+      // Re-read so the badges, hints and the model dropdown reflect the change.
+      await renderConfigPage(root);
+    } catch (error) {
+      notify(`Could not save the connection: ${(error as Error).message}`, "danger");
+    } finally {
+      done();
+    }
+  }
+
+  save.addEventListener("click", () => void persist(save, false));
+  test.addEventListener("click", () => void persist(test, true));
+  return pane;
+}
+
+function sourceNote(source: string, what: string): string {
+  if (source === "config") return `This ${what} is stored in the app.`;
+  if (source === "environment") return `Currently coming from the environment. Saving here overrides it.`;
+  return `No ${what} configured yet.`;
+}
+
+function textField(label: string, value: string, placeholder: string, help: string) {
+  const wrapper = el("div", "col-md-6");
+  wrapper.appendChild(el("label", "form-label", escapeHtml(label)));
+  const input = el("input", "form-control") as HTMLInputElement;
+  input.value = value;
+  input.placeholder = placeholder;
+  wrapper.appendChild(input);
+  wrapper.appendChild(el("div", "form-text", escapeHtml(help)));
+  return { wrapper, input };
 }
 
 function providerCard(config: AppConfig): HTMLElement {
