@@ -1,20 +1,16 @@
-/** Bias audit: run the paired corpus through the active model and read the deltas. */
-
-import {
-  AllCommunityModule,
-  ModuleRegistry,
-  createGrid,
-  type ColDef,
-  type ICellRendererParams,
-} from "ag-grid-community";
+/** Bias audit: every baseline resume shown beside its protected-class variant.
+ *
+ * The question a reviewer is asking is "did adding this sentence change how the
+ * AI judged this person?", so the report answers it literally — the two scored
+ * resumes side by side, with the inserted sentence quoted and every changed
+ * judgement highlighted. No statistics vocabulary, because none is needed to
+ * read one resume against its own copy.
+ */
 
 import { getAudit, getCorpus, listAudits, listScreenings, startAudit } from "./api.ts";
 import { showProgress } from "./progress.ts";
-import { screeningTheme } from "./stageGrid.ts";
-import type { AuditPair, AuditRun } from "./types.ts";
+import type { AuditComparison, AuditRun, Qualification } from "./types.ts";
 import { busy, el, escapeHtml, formatDate, notify } from "./ui.ts";
-
-ModuleRegistry.registerModules([AllCommunityModule]);
 
 export async function renderAuditPage(root: HTMLElement): Promise<void> {
   root.innerHTML = '<div class="text-muted">Loading the audit corpus…</div>';
@@ -31,7 +27,7 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
     el(
       "p",
       "text-muted",
-      "Each variant resume is identical to its baseline except for one sentence disclosing a protected characteristic. Any difference in the outcome is attributable to that sentence.",
+      "Each resume is scored twice: once as written, and once with a single sentence added that discloses a protected characteristic. Nothing else differs, so any change in the score came from that sentence.",
     ),
   );
 
@@ -39,72 +35,11 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
     notify("The audit corpus could not be read.", "danger");
     return;
   }
-
   root.appendChild(corpusCard(corpus));
 
-  const runner = el("div", "card mb-3");
-  runner.appendChild(el("div", "card-header fw-semibold", "Run an audit"));
-  const runnerBody = el("div", "card-body");
-  runnerBody.appendChild(
-    el(
-      "p",
-      "text-muted small",
-      "The audit evaluates the whole corpus against a screening's qualification list, using the provider and model selected on the Configuration page. It never touches that screening's own candidates.",
-    ),
-  );
-
-  const select = el("select", "form-select mb-3") as HTMLSelectElement;
-  const usable = screenings.filter((screening) => screening.qualifications > 0);
-  if (usable.length === 0) {
-    select.innerHTML = '<option value="">No screening has qualifications yet</option>';
-    select.disabled = true;
-  } else {
-    for (const screening of usable) {
-      const option = el(
-        "option",
-        "",
-        `${escapeHtml(screening.job_title || "(untitled)")} — ${screening.qualifications} qualification(s)`,
-      ) as HTMLOptionElement;
-      option.value = screening.id;
-      select.appendChild(option);
-    }
-  }
-  runnerBody.appendChild(select);
-
-  const run = el("button", "btn btn-primary", "Run bias audit") as HTMLButtonElement;
-  run.disabled = usable.length === 0;
-  runnerBody.appendChild(run);
-
-  const progress = el("div", "mt-3 d-none");
-  runnerBody.appendChild(progress);
-  runner.appendChild(runnerBody);
-  root.appendChild(runner);
-
   const results = el("div");
+  root.appendChild(runnerCard(screenings, results, root));
   root.appendChild(results);
-
-  run.addEventListener("click", async () => {
-    const done = busy(run, "Running…");
-    try {
-      const started = await startAudit(select.value);
-      notify(`Audit started with ${started.provider}/${started.model}.`, "info");
-      showProgress(progress, started.jobId, {
-        onDone: () => {
-          done();
-          void renderRun(results, started.auditId);
-          void refreshHistory(root);
-        },
-        onError: (message) => {
-          done();
-          notify(`Audit failed: ${message}`, "danger");
-        },
-      });
-    } catch (error) {
-      done();
-      notify(`Could not start the audit: ${(error as Error).message}`, "danger");
-    }
-  });
-
   root.appendChild(historyCard(runs, results));
 
   if (runs.length > 0 && runs[0].status === "done") {
@@ -127,8 +62,7 @@ function corpusCard(corpus: {
     el(
       "p",
       "mb-2",
-      `<code>${escapeHtml(corpus.directory)}</code> — ${corpus.files} resumes: ` +
-        `${corpus.baselines} baselines and ${corpus.pairs} baseline/variant pairs.`,
+      `${corpus.files} resumes: ${corpus.baselines} originals and ${corpus.pairs} comparisons.`,
     ),
   );
   const chips = el("div", "d-flex flex-wrap gap-2");
@@ -137,44 +71,89 @@ function corpusCard(corpus: {
       el(
         "span",
         entry.attribute === "control" ? "badge text-bg-secondary" : "badge text-bg-primary",
-        `${escapeHtml(entry.label)}: ${entry.pairs} pair(s)`,
+        `${escapeHtml(entry.label)}: ${entry.pairs}`,
       ),
     );
   }
   body.appendChild(chips);
-  if (corpus.unpaired.length > 0) {
-    body.appendChild(
-      el(
-        "p",
-        "text-warning-emphasis small mt-2 mb-0",
-        `${corpus.unpaired.length} variant(s) have no matching baseline: ${escapeHtml(
-          corpus.unpaired.join(", "),
-        )}`,
-      ),
-    );
+  body.appendChild(
+    el(
+      "p",
+      "text-muted small mb-0 mt-2",
+      "Controls are pairs where the added sentence discloses nothing. They show how much the score moves for no reason at all — the yardstick for everything else.",
+    ),
+  );
+  card.appendChild(body);
+  return card;
+}
+
+function runnerCard(
+  screenings: { id: string; job_title: string; qualifications: number }[],
+  results: HTMLElement,
+  root: HTMLElement,
+): HTMLElement {
+  const card = el("div", "card mb-3");
+  card.appendChild(el("div", "card-header fw-semibold", "Run an audit"));
+  const body = el("div", "card-body");
+
+  const select = el("select", "form-select mb-3") as HTMLSelectElement;
+  const usable = screenings.filter((s) => s.qualifications > 0);
+  if (usable.length === 0) {
+    select.innerHTML = '<option value="">No screening has qualifications yet</option>';
+    select.disabled = true;
+  } else {
+    for (const screening of usable) {
+      const option = el(
+        "option",
+        "",
+        `${escapeHtml(screening.job_title || "(untitled)")} — ${screening.qualifications} qualification(s)`,
+      ) as HTMLOptionElement;
+      option.value = screening.id;
+      select.appendChild(option);
+    }
   }
+  body.appendChild(select);
+
+  const run = el("button", "btn btn-primary", "Run bias audit") as HTMLButtonElement;
+  run.disabled = usable.length === 0;
+  body.appendChild(run);
+
+  const progress = el("div", "mt-3 d-none");
+  body.appendChild(progress);
+
+  run.addEventListener("click", async () => {
+    const done = busy(run, "Running…");
+    try {
+      const started = await startAudit(select.value);
+      notify(`Audit started with ${started.provider}/${started.model}.`, "info");
+      showProgress(progress, started.jobId, {
+        onDone: () => {
+          done();
+          void renderRun(results, started.auditId);
+          void renderAuditPage(root);
+        },
+        onError: (message) => {
+          done();
+          notify(`Audit failed: ${message}`, "danger");
+        },
+      });
+    } catch (error) {
+      done();
+      notify(`Could not start the audit: ${(error as Error).message}`, "danger");
+    }
+  });
+
   card.appendChild(body);
   return card;
 }
 
 function historyCard(
-  runs: {
-    id: string;
-    provider: string;
-    model: string;
-    status: string;
-    passed: boolean | null;
-    created_at: string;
-    stageFlips: number | null;
-    meanCoverageDelta: number | null;
-    pairs: number | null;
-  }[],
+  runs: { id: string; provider: string; model: string; status: string; created_at: string }[],
   results: HTMLElement,
 ): HTMLElement {
   const card = el("div", "card mt-3");
   card.appendChild(el("div", "card-header fw-semibold", "Previous runs"));
   const body = el("div", "card-body p-0");
-
   if (runs.length === 0) {
     body.appendChild(el("p", "text-muted m-3", "No audits have been run yet."));
     card.appendChild(body);
@@ -182,27 +161,14 @@ function historyCard(
   }
 
   const table = el("table", "table table-sm table-hover mb-0");
-  table.innerHTML = `
-    <thead><tr>
-      <th>Run</th><th>Model</th><th>Result</th><th>Stage flips</th>
-      <th>Mean coverage delta</th><th>Pairs</th><th></th>
-    </tr></thead>`;
+  table.innerHTML = "<thead><tr><th>Run</th><th>Model</th><th>Status</th><th></th></tr></thead>";
   const tbody = el("tbody");
   for (const run of runs) {
     const row = el("tr");
-    const badge =
-      run.status !== "done"
-        ? `<span class="badge text-bg-secondary">${escapeHtml(run.status)}</span>`
-        : run.passed
-          ? '<span class="badge text-bg-success">Passed</span>'
-          : '<span class="badge text-bg-danger">Failed</span>';
     row.innerHTML = `
       <td>${escapeHtml(formatDate(run.created_at))}</td>
       <td><code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code></td>
-      <td>${badge}</td>
-      <td>${run.stageFlips ?? "—"}</td>
-      <td>${run.meanCoverageDelta ?? "—"}</td>
-      <td>${run.pairs ?? "—"}</td>
+      <td>${escapeHtml(run.status)}</td>
       <td class="text-end"></td>`;
     const view = el("button", "btn btn-sm btn-outline-primary", "View") as HTMLButtonElement;
     view.addEventListener("click", () => void renderRun(results, run.id));
@@ -215,10 +181,9 @@ function historyCard(
   return card;
 }
 
-async function refreshHistory(root: HTMLElement): Promise<void> {
-  // Cheap and correct: the whole page is derived from three GETs.
-  await renderAuditPage(root);
-}
+// ---------------------------------------------------------------------------
+// One run
+// ---------------------------------------------------------------------------
 
 async function renderRun(container: HTMLElement, auditId: string): Promise<void> {
   container.innerHTML = '<div class="text-muted">Loading results…</div>';
@@ -241,100 +206,186 @@ async function renderRun(container: HTMLElement, auditId: string): Promise<void>
     return;
   }
 
-  const summary = run.summary;
-  const banner = el(
-    "div",
-    `alert ${summary.passed ? "alert-success" : "alert-danger"}`,
-    `<h5 class="alert-heading">${summary.passed ? "Negligible bias detected" : "Bias threshold exceeded"}</h5>
-     <p class="mb-1"><code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code> —
-     ${summary.pairs_measured} measured pair(s), ${summary.total_stage_flips} stage-outcome flip(s),
-     mean coverage delta ${summary.mean_coverage_delta}.</p>
-     <p class="mb-0 small">Thresholds: ≤ ${summary.thresholds.max_stage_flips} stage flip(s),
-     mean coverage delta ≤ ${summary.thresholds.max_mean_coverage_delta}.
-     Control pairs (no attribute injected) flipped ${summary.control_stage_flips} outcome(s) — that is the noise floor.</p>`,
-  );
-  if (summary.failures.length > 0) {
-    banner.appendChild(
-      el("ul", "mb-0 mt-2", summary.failures.map((f) => `<li>${escapeHtml(f)}</li>`).join("")),
-    );
-  }
-  container.appendChild(banner);
+  container.appendChild(headline(run));
 
-  const attributes = el("div", "row g-3 mb-3");
-  for (const attribute of summary.attributes) {
-    const column = el("div", "col-md-6 col-xl-3");
-    const card = el("div", `card h-100 ${attribute.attribute === "control" ? "border-secondary" : ""}`);
-    card.appendChild(el("div", "card-header fw-semibold small", escapeHtml(attribute.label)));
-    card.appendChild(
+  const measured = run.comparisons.filter((c) => !c.isControl);
+  const controls = run.comparisons.filter((c) => c.isControl);
+
+  const list = el("div", "card");
+  list.appendChild(
+    el(
+      "div",
+      "card-header fw-semibold d-flex justify-content-between align-items-center",
+      `<span>Comparisons</span><span class="text-muted small fw-normal">click any row to see the two resumes scored side by side</span>`,
+    ),
+  );
+  const body = el("div", "card-body p-0");
+  for (const comparison of measured) {
+    body.appendChild(comparisonRow(comparison, run.qualifications));
+  }
+  if (controls.length) {
+    body.appendChild(
       el(
         "div",
-        "card-body small",
-        `<div>Pairs: <strong>${attribute.pairs}</strong></div>
-         <div>Stage-outcome flips: <strong>${attribute.stage_flips}</strong></div>
-         <div>Verdict flips: <strong>${attribute.verdict_flips}</strong> (${(
-           attribute.verdict_flip_rate * 100
-         ).toFixed(1)}%)</div>
-         <div>Mean coverage delta: <strong>${attribute.mean_coverage_delta}</strong> (max ${attribute.max_coverage_delta})</div>
-         <div>Mean rank displacement: <strong>${attribute.mean_rank_displacement}</strong> (max ${attribute.max_rank_displacement})</div>`,
+        "px-3 py-2 bg-body-tertiary border-top border-bottom small fw-semibold",
+        "Controls — nothing meaningful was added to these",
       ),
     );
-    column.appendChild(card);
-    attributes.appendChild(column);
+    for (const comparison of controls) {
+      body.appendChild(comparisonRow(comparison, run.qualifications));
+    }
   }
-  container.appendChild(attributes);
+  list.appendChild(body);
+  container.appendChild(list);
+}
 
-  const gridCard = el("div", "card");
-  gridCard.appendChild(el("div", "card-header fw-semibold", "Pairs, worst first"));
-  const gridBody = el("div", "card-body");
-  const host = el("div", "stage-grid");
-  gridBody.appendChild(host);
-  gridCard.appendChild(gridBody);
-  container.appendChild(gridCard);
+function headline(run: AuditRun): HTMLElement {
+  const counts = run.counts;
+  const clean = counts.advancementChanges === 0 && counts.lostGround === 0;
+  const banner = el("div", `alert ${clean ? "alert-success" : "alert-warning"}`);
 
-  const columns: ColDef<AuditPair>[] = [
-    { headerName: "Attribute", field: "attribute_label", width: 170 },
-    { headerName: "Baseline", field: "baseline_file", flex: 1, minWidth: 220 },
-    { headerName: "Variant", field: "variant_file", flex: 1, minWidth: 220 },
-    {
-      headerName: "Stage flip",
-      width: 130,
-      valueGetter: (params) => (params.data?.delta.stage_flip ? "Yes" : "No"),
-      cellRenderer: (params: ICellRendererParams<AuditPair>) =>
-        params.value === "Yes"
-          ? '<span class="badge text-bg-danger">Yes</span>'
-          : '<span class="badge text-bg-light border">No</span>',
-    },
-    {
-      headerName: "Coverage Δ",
-      width: 130,
-      valueGetter: (params) => params.data?.delta.coverage_delta ?? 0,
-    },
-    {
-      headerName: "Verdict flips",
-      width: 140,
-      valueGetter: (params) => params.data?.delta.verdict_flip_count ?? 0,
-    },
-    { headerName: "Rank Δ", field: "rank_displacement", width: 110 },
-    {
-      headerName: "What flipped",
-      flex: 2,
-      minWidth: 260,
-      valueGetter: (params) =>
-        (params.data?.delta.verdict_flips ?? [])
-          .map((flip) => `${flip.qual_text}: ${flip.baseline} → ${flip.variant}`)
-          .join(" · ") || "—",
-      tooltipValueGetter: (params) => String(params.value ?? ""),
-    },
-  ];
+  banner.appendChild(
+    el(
+      "h5",
+      "alert-heading",
+      counts.advancementChanges === 0
+        ? "No candidate's advancement changed"
+        : `${counts.advancementChanges} candidate(s) would have been advanced differently`,
+    ),
+  );
+  banner.appendChild(
+    el(
+      "p",
+      "mb-1",
+      `Out of <strong>${counts.comparisons}</strong> comparisons: ` +
+        `<strong>${counts.identical}</strong> scored exactly the same, ` +
+        `<strong>${counts.sameTotal}</strong> met the same number of qualifications but were judged differently on some, ` +
+        `<strong>${counts.lostGround}</strong> lost ground after the disclosure, ` +
+        `<strong>${counts.gainedGround}</strong> gained. ` +
+        `In total <strong>${counts.judgmentsChanged}</strong> of ${counts.judgmentsCompared} individual qualification judgements changed.`,
+    ),
+  );
+  banner.appendChild(
+    el(
+      "p",
+      "mb-0 small",
+      `Model: <code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code>. ` +
+        (counts.controlsUnstable > 0
+          ? `<strong>Caution:</strong> ${counts.controlsUnstable} of ${counts.controls} control comparisons also changed, even though nothing was disclosed in them. Movements of that size cannot be attributed to the disclosure — rows below are flagged where this applies.`
+          : `All ${counts.controls} control comparisons scored identically, so movements below are attributable to the disclosure.`),
+    ),
+  );
+  return banner;
+}
 
-  createGrid<AuditPair>(host, {
-    theme: screeningTheme,
-    columnDefs: columns,
-    rowData: run.pairs,
-    defaultColDef: { sortable: true, filter: true, resizable: true },
-    tooltipShowDelay: 200,
-    rowClassRules: {
-      "audit-control-row": (params) => Boolean(params.data?.is_control),
-    },
+function comparisonRow(comparison: AuditComparison, quals: Qualification[]): HTMLElement {
+  const wrapper = el("div", "border-bottom");
+  const header = el("div", "d-flex align-items-center gap-3 px-3 py-2 comparison-row");
+  header.style.cursor = "pointer";
+
+  const verdictBadge = comparison.netChange < 0
+    ? `<span class="badge text-bg-danger">lost ${Math.abs(comparison.netChange)}</span>`
+    : comparison.netChange > 0
+      ? `<span class="badge text-bg-warning">gained ${comparison.netChange}</span>`
+      : comparison.changed.length
+        ? `<span class="badge text-bg-secondary">same total</span>`
+        : `<span class="badge text-bg-success">identical</span>`;
+
+  header.innerHTML = `
+    <span class="fw-semibold" style="min-width:11rem">${escapeHtml(comparison.candidate)}</span>
+    <span class="badge text-bg-light border">${escapeHtml(comparison.attributeLabel)}</span>
+    <span style="min-width:9rem">${comparison.baseline.met}/${comparison.baseline.total}
+      <span class="text-muted">&rarr;</span> ${comparison.variant.met}/${comparison.variant.total}</span>
+    ${verdictBadge}
+    <span class="text-muted small">${comparison.changed.length} judgement(s) changed</span>
+    ${comparison.matchesControl ? '<span class="badge text-bg-secondary" title="This resume moves by the same amount even when nothing is disclosed, so the movement is not attributable to the disclosure.">matches its control</span>' : ""}
+    ${comparison.advancementChanged ? '<span class="badge text-bg-danger">advancement changed</span>' : ""}
+    <span class="ms-auto text-muted">▾</span>`;
+
+  const detail = el("div", "px-3 pb-3 d-none");
+  let built = false;
+  header.addEventListener("click", () => {
+    if (!built) {
+      detail.appendChild(sideBySide(comparison, quals));
+      built = true;
+    }
+    detail.classList.toggle("d-none");
   });
+
+  wrapper.append(header, detail);
+  return wrapper;
+}
+
+function sideBySide(comparison: AuditComparison, quals: Qualification[]): HTMLElement {
+  const panel = el("div");
+
+  if (comparison.added.length) {
+    const added = el("div", "alert alert-light border mb-3");
+    added.appendChild(el("div", "small text-muted mb-1", "Text added to the original resume:"));
+    for (const sentence of comparison.added) {
+      added.appendChild(el("div", "fst-italic", `“${escapeHtml(sentence)}”`));
+    }
+    panel.appendChild(added);
+  }
+
+  const table = el("table", "table table-sm align-middle mb-0");
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th style="width:45%">Qualification</th>
+        <th class="text-center">Original resume</th>
+        <th class="text-center">With disclosure</th>
+        <th></th>
+      </tr>
+    </thead>`;
+
+  const body = el("tbody");
+  const summary = el("tr", "table-light fw-semibold");
+  summary.innerHTML = `
+    <td>Qualifications met</td>
+    <td class="text-center">${comparison.baseline.met} of ${comparison.baseline.total}</td>
+    <td class="text-center">${comparison.variant.met} of ${comparison.variant.total}</td>
+    <td></td>`;
+  body.appendChild(summary);
+
+  const recommendation = el("tr", "table-light fw-semibold");
+  recommendation.innerHTML = `
+    <td>AI recommendation</td>
+    <td class="text-center">${badge(comparison.baseline.aiPass)}</td>
+    <td class="text-center">${badge(comparison.variant.aiPass)}</td>
+    <td>${comparison.advancementChanged ? '<span class="text-danger fw-semibold">changed</span>' : ""}</td>`;
+  body.appendChild(recommendation);
+
+  for (const qual of quals) {
+    const before = comparison.baseline.verdicts[qual.id];
+    const after = comparison.variant.verdicts[qual.id];
+    const changed = comparison.changed.includes(qual.id);
+    const row = el("tr", changed ? "table-warning" : "");
+    row.innerHTML = `
+      <td><span class="badge text-bg-light border me-1">${qual.label}</span>${escapeHtml(qual.text)}</td>
+      <td class="text-center ${verdictClass(before?.verdict)}" title="${escapeHtml(before?.evidence || "")}">${before?.verdict ?? "—"}</td>
+      <td class="text-center ${verdictClass(after?.verdict)}" title="${escapeHtml(after?.evidence || "")}">${after?.verdict ?? "—"}</td>
+      <td class="small">${changed ? '<span class="text-danger">changed</span>' : ""}</td>`;
+    body.appendChild(row);
+  }
+
+  table.appendChild(body);
+  panel.appendChild(table);
+  panel.appendChild(
+    el("p", "text-muted small mt-2 mb-0", "Hover a verdict to see the evidence the AI quoted for it."),
+  );
+  return panel;
+}
+
+function badge(pass: boolean): string {
+  return pass
+    ? '<span class="badge text-bg-success">Advance</span>'
+    : '<span class="badge text-bg-danger">Reject</span>';
+}
+
+function verdictClass(verdict: string | undefined): string {
+  if (verdict === "Meets") return "verdict-meets";
+  if (verdict === "Partial") return "verdict-partial";
+  if (verdict === "No") return "verdict-no";
+  return "verdict-missing";
 }

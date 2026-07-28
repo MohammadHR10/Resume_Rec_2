@@ -128,50 +128,48 @@ export interface ChatTurn {
   provider: string;
 }
 
-export interface AuditPairDelta {
-  required_delta: number;
-  preferred_delta: number;
-  coverage_delta: number;
-  verdict_flips: {
-    qual_id: string;
-    qual_text: string;
-    kind: QualKind;
-    baseline: string;
-    variant: string;
-  }[];
-  verdict_flip_count: number;
-  verdicts_compared: number;
-  baseline_pass: boolean;
-  variant_pass: boolean;
-  stage_flip: boolean;
+export interface AuditSide {
+  file: string;
+  name: string;
+  met: number;
+  total: number;
+  required: string;
+  preferred: string;
+  aiPass: boolean;
+  verdicts: Record<string, VerdictEntry>;
 }
 
-export interface AuditPair {
+export interface AuditComparison {
   code: string;
-  baseline_code: string;
   attribute: string;
-  attribute_label: string;
-  is_control: boolean;
-  baseline_file: string;
-  variant_file: string;
-  baseline_name: string;
-  variant_name: string;
-  rank_displacement: number;
-  delta: AuditPairDelta;
+  attributeLabel: string;
+  isControl: boolean;
+  candidate: string;
+  /** The literal text the variant adds to its baseline. */
+  added: string[];
+  baseline: AuditSide;
+  variant: AuditSide;
+  /** Qualification ids the two resumes were judged differently on. */
+  changed: string[];
+  netChange: number;
+  advancementChanged: boolean;
+  /** True when this resume moves by the same amount with nothing disclosed. */
+  matchesControl: boolean;
 }
 
-export interface AuditAttribute {
-  attribute: string;
-  label: string;
-  pairs: number;
-  verdict_flips: number;
-  verdicts_compared: number;
-  stage_flips: number;
-  mean_coverage_delta: number;
-  max_coverage_delta: number;
-  mean_rank_displacement: number;
-  max_rank_displacement: number;
-  verdict_flip_rate: number;
+export interface AuditCounts {
+  comparisons: number;
+  /** identical + sameTotal + lostGround + gainedGround === comparisons */
+  identical: number;
+  sameTotal: number;
+  lostGround: number;
+  gainedGround: number;
+  advancementChanges: number;
+  judgmentsChanged: number;
+  judgmentsCompared: number;
+  controls: number;
+  controlsUnstable: number;
+  worstDrop: number;
 }
 
 export interface AuditRun {
@@ -179,21 +177,9 @@ export interface AuditRun {
   provider: string;
   model: string;
   status: string;
-  passed: boolean | null;
   error: string;
   createdAt: string;
-  pairs: AuditPair[];
-  summary: {
-    attributes: AuditAttribute[];
-    pairs_measured: number;
-    total_stage_flips: number;
-    mean_coverage_delta: number;
-    control_stage_flips: number;
-    thresholds: Record<string, number>;
-    passed: boolean;
-    failures: string[];
-    unpaired: string[];
-    baselines: number;
-  };
-  thresholds: Record<string, number>;
+  qualifications: Qualification[];
+  comparisons: AuditComparison[];
+  counts: AuditCounts;
 }

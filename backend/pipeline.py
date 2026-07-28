@@ -433,6 +433,17 @@ async def run_evaluation(
 # Reading a screening back out
 # ---------------------------------------------------------------------------
 
+def label_qualifications(quals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach the short R1/P2 labels used in prompts, grids and chat tools."""
+    counters = {"required": 0, "preferred": 0}
+    labelled = []
+    for qual in quals:
+        counters[qual["kind"]] += 1
+        prefix = "R" if qual["kind"] == "required" else "P"
+        labelled.append({**qual, "label": f"{prefix}{counters[qual['kind']]}"})
+    return labelled
+
+
 def load_qualifications(screening_id: str) -> list[dict[str, Any]]:
     return db.query(
         "SELECT id, text, kind, position FROM qualification WHERE screening_id=? "

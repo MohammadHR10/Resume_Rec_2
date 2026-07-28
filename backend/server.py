@@ -827,17 +827,17 @@ def get_audit(audit_id: str) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM audit_run WHERE id=?", (audit_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Audit run not found")
+    comparison = audit.build_comparison(row) if row["status"] == "done" else {}
     return {
         "id": row["id"],
         "provider": row["provider"],
         "model": row["model"],
         "status": row["status"],
-        "passed": None if row["passed"] is None else bool(row["passed"]),
         "error": row["error"],
         "createdAt": row["created_at"],
-        "pairs": json.loads(row["pairs"] or "[]"),
-        "summary": json.loads(row["summary"] or "{}"),
-        "thresholds": json.loads(row["thresholds"] or "{}"),
+        "qualifications": comparison.get("qualifications", []),
+        "comparisons": comparison.get("comparisons", []),
+        "counts": comparison.get("summary", {}),
     }
 
 
