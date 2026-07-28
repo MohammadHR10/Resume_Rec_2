@@ -214,7 +214,23 @@ class OpenAICompatibleProvider(LLMProvider):
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            **self.extra_headers(),
         }
+
+    # Seams for gateways that speak the OpenAI dialect but demand something
+    # extra on top of it — tenant attribution headers, determinism parameters,
+    # or an endpoint that is not {root}/v1/chat/completions.
+
+    def extra_headers(self) -> dict[str, str]:
+        """Additional request headers. Empty for a plain OpenAI endpoint."""
+        return {}
+
+    def extra_body(self) -> dict[str, Any]:
+        """Additional top-level body parameters on every completion."""
+        return {}
+
+    def completions_url(self) -> str:
+        return f"{self.root}{self.api_root_suffix}/chat/completions"
 
     def _require_configured(self) -> None:
         if not self.is_configured():
@@ -308,6 +324,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             + list(messages),
             "temperature": 0,
+            **self.extra_body(),
         }
         if strict_schema and self.supports_json_schema:
             body["response_format"] = {
@@ -327,7 +344,7 @@ class OpenAICompatibleProvider(LLMProvider):
         schema_name: str,
         sys_text: str,
     ) -> str:
-        url = f"{self.root}{self.api_root_suffix}/chat/completions"
+        url = self.completions_url()
         last_error = "unknown error"
 
         for attempt in range(MAX_RETRIES + 1):

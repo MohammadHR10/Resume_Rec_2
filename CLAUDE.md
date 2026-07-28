@@ -107,8 +107,11 @@ Vanilla TypeScript, no framework. `main.ts` is a hash router plus the screening 
 
 ## Currently open
 
-- **SIS fastLLM gateway** connection details have not arrived. It ships as an
-  OpenAI-compatible client; every assumption lives in `backend/llm/fastllm.py`.
+- **SIS fastLLM gateway**: the request contract is taken from the previous app's working
+  client on `origin/VDI` (`LLM_GATEWAY_URL`/`LLM_GATEWAY_KEY`, `hl-project-id` and
+  `hl-requester-id` headers, pinned `seed`, models named like `GPT 120b`). Only the URL and
+  key values are still missing. Model listing is unproven — the old client never listed, so
+  `/v1/models` may 404 and the config page falls back to a free-text model field.
 - **Neither CLI harness is installed in the image.** `chat_mode: harness` therefore degrades
   to structured on every turn (surfaced in the UI). Adding `claude` or `codex` to the
   Dockerfile plus proxy credentials is all that is missing.

@@ -142,6 +142,87 @@ def test_client_errors_fail_fast(transport):
     assert len(transport["calls"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# The SIS gateway's own contract, as proven by the Streamlit app's VDI-branch
+# client: LLM_GATEWAY_* env names, hl-* attribution headers, a pinned seed, and
+# a URL that may be the endpoint rather than a root.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def gateway(monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("LLM_GATEWAY_KEY", "gw-key")
+    monkeypatch.setenv("HL_PROJECT_ID", "proj-7")
+    monkeypatch.setenv("HL_REQUESTER_ID", "dastewart")
+    monkeypatch.setenv("LLM_MODEL", "llama-3.2-90b-vision-instruct")
+    for stale in ("FASTLLM_BASE_URL", "FASTLLM_API_KEY", "FASTLLM_MODEL", "LLM_SEED"):
+        monkeypatch.delenv(stale, raising=False)
+
+
+def test_gateway_reads_the_env_names_the_existing_app_uses(gateway):
+    provider = FastLLMProvider()
+    assert provider.base_url == "https://gateway.example/v1"
+    assert provider.api_key == "gw-key"
+    assert provider.default_model == "llama-3.2-90b-vision-instruct"
+    assert provider.is_configured() is True
+
+
+def test_gateway_sends_the_attribution_headers_and_a_pinned_seed(gateway, transport):
+    transport["queue"].append(completion('{"name": "a", "score": 1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA)
+
+    call = transport["calls"][0]
+    assert call["headers"]["hl-project-id"] == "proj-7"
+    assert call["headers"]["hl-requester-id"] == "dastewart"
+    assert call["headers"]["Authorization"] == "Bearer gw-key"
+    # Determinism matters most for the bias audit, where an unpinned sample
+    # would read as a delta caused by the injected attribute.
+    assert call["body"]["seed"] == 42
+    assert call["url"] == "https://gateway.example/v1/chat/completions"
+
+
+def test_the_seed_is_overridable(gateway, monkeypatch, transport):
+    monkeypatch.setenv("LLM_SEED", "1234")
+    transport["queue"].append(completion('{"name": "a", "score": 1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA)
+    assert transport["calls"][0]["body"]["seed"] == 1234
+
+
+def test_attribution_headers_are_omitted_when_unset(gateway, monkeypatch, transport):
+    monkeypatch.delenv("HL_PROJECT_ID")
+    monkeypatch.delenv("HL_REQUESTER_ID")
+    transport["queue"].append(completion('{"name": "a", "score": 1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA)
+    assert "hl-project-id" not in transport["calls"][0]["headers"]
+
+
+def test_a_url_naming_the_full_endpoint_is_posted_to_verbatim(gateway, monkeypatch, transport):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "https://gateway.example/v1/chat/completions")
+    transport["queue"].append(completion('{"name": "a", "score": 1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA)
+    assert transport["calls"][0]["url"] == "https://gateway.example/v1/chat/completions"
+
+
+def test_model_listing_still_resolves_from_a_full_endpoint_url(gateway, monkeypatch, transport):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "https://gateway.example/v1/chat/completions")
+    transport["queue"].append(FakeResponse(200, {"data": [{"id": "GPT 120b"}]}))
+    assert FastLLMProvider().list_models() == ["GPT 120b"]
+    assert transport["calls"][0]["url"] == "https://gateway.example/v1/models"
+
+
+def test_gateway_harness_env_points_codex_at_the_root_not_the_endpoint(gateway, monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "https://gateway.example/v1/chat/completions")
+    assert FastLLMProvider().harness_env()["OPENAI_BASE_URL"] == "https://gateway.example/v1"
+
+
+def test_the_ul_proxy_sends_no_gateway_specific_extras(transport):
+    transport["queue"].append(completion('{"name": "a", "score": 1}'))
+    ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
+    call = transport["calls"][0]
+    assert "seed" not in call["body"]
+    assert "hl-project-id" not in call["headers"]
+
+
 def test_a_gateway_that_rejects_response_format_falls_back_to_prompted_json(transport):
     transport["queue"].extend(
         [

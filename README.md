@@ -82,8 +82,10 @@ comparable across models.
 Two providers, selected per run on the Configuration page:
 
 - **Azure OpenAI via the UL AI proxy** — Bearer-authed, OpenAI-compatible.
-- **SIS fastLLM gateway** — UT System's private AI infrastructure. Assumed OpenAI-compatible;
-  see *Known limitations*.
+- **SIS fastLLM gateway** — UT System's private AI infrastructure (Llama, Nemotron, GPT-OSS).
+  Uses the same `LLM_GATEWAY_*` variables and `hl-*` attribution headers the previous
+  Streamlit app used, so an existing `.env` works unchanged, and pins a sampling seed so a
+  resume scores the same way twice.
 
 Every evaluation, chat session and audit run is tagged with the provider and model used.
 Comparing two models means running the same screening under each — there is no side-by-side
@@ -128,7 +130,9 @@ provider/model is selected. See `.env.example` for the full list.
 | Variable | Purpose |
 |----------|---------|
 | `ULMAIPROXY_BASE_URL`, `ULMAIPROXY_AUTH_TOKEN` | UL AI proxy endpoint and Bearer token |
-| `FASTLLM_BASE_URL`, `FASTLLM_API_KEY` | SIS fastLLM gateway |
+| `LLM_GATEWAY_URL`, `LLM_GATEWAY_KEY` | SIS fastLLM gateway (same names the previous app used) |
+| `HL_PROJECT_ID`, `HL_REQUESTER_ID` | Gateway tenant attribution, sent as `hl-*` headers |
+| `LLM_MODEL`, `LLM_SEED` | Gateway model id and the pinned sampling seed |
 | `FASTLLM_JSON_SCHEMA` | `0` if the gateway's models reject `response_format` |
 | `SCREENING_DB` | SQLite file (default `./data/screening.db`) |
 | `CHAT_WORKSPACE_ROOT` | Per-chat-session scratch directories |
@@ -148,8 +152,11 @@ verdict quality is validated by hand against the corpus and a real position desc
 
 ## Known limitations
 
-- **The SIS fastLLM gateway is unconfirmed.** It ships as an OpenAI-compatible client;
-  every assumption about it is isolated in `backend/llm/fastllm.py`.
+- **The SIS gateway's URL and key are the only things still missing.** The request shape is
+  taken from the previous app's own working client (`origin/VDI`), so filling in
+  `LLM_GATEWAY_URL` and `LLM_GATEWAY_KEY` should be all that is needed. Model *listing* is
+  unproven — the old client never listed models, so `/v1/models` may 404, in which case the
+  Configuration page falls back to a free-text model field.
 - **Neither CLI harness is installed in the image**, so `harness` chat mode currently degrades
   to `structured` on every turn (visibly, in the UI). Adding `claude` or `codex` to the
   Dockerfile and pointing it at the proxy is all that is missing.
