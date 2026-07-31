@@ -15,6 +15,8 @@
   "dependencies": {
     "@popperjs/core": "^2.11.8",
     "ag-grid-community": "^34.3.0",
-    "bootstrap": "^5.3.8"
+    "bootstrap": "^5.3.8",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.7"
   }
 }

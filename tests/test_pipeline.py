@@ -182,7 +182,8 @@ def test_evaluate_resume_maps_labels_back_to_qualification_ids():
     )
     result = pipeline.evaluate_resume(provider, "m", "resume text", _quals())
     assert result["candidate_name"] == "Ada Lovelace"
-    assert result["verdicts"]["r1"] == {"verdict": "Meets", "evidence": "BS Computer Science"}
+    assert result["verdicts"]["r1"]["verdict"] == "Meets"
+    assert result["verdicts"]["r1"]["evidence"] == "BS Computer Science"
     # Case is normalized rather than dropped.
     assert result["verdicts"]["r2"]["verdict"] == "No"
     assert result["verdicts"]["p1"]["verdict"] == "Partial"
@@ -214,3 +215,38 @@ def test_evaluation_schema_constrains_ids_and_verdicts():
     item = schema["properties"]["verdicts"]["items"]["properties"]
     assert item["qual_id"]["enum"] == ["R1", "P1"]
     assert item["verdict"]["enum"] == ["Meets", "Partial", "No"]
+    # Reviewers override the AI at the gate, so they need its argument, not
+    # just its conclusion and a quote.
+    assert "reasoning" in item
+
+
+def test_evaluate_resume_captures_the_reasoning_behind_each_verdict():
+    provider = FakeProvider(
+        {
+            "candidate_name": "Ada",
+            "summary": "",
+            "verdicts": [
+                {
+                    "qual_id": "R2",
+                    "verdict": "Partial",
+                    "evidence": "2 years of Python",
+                    "reasoning": "The resume shows two years against a three-year requirement.",
+                }
+            ],
+        }
+    )
+    result = pipeline.evaluate_resume(provider, "m", "resume", _quals())
+    assert result["verdicts"]["r2"]["reasoning"].startswith("The resume shows two years")
+
+
+def test_a_verdict_without_reasoning_is_still_accepted():
+    """Screenings scored before reasoning was captured must keep working."""
+    provider = FakeProvider(
+        {
+            "candidate_name": "",
+            "summary": "",
+            "verdicts": [{"qual_id": "R1", "verdict": "Meets", "evidence": "BS CS"}],
+        }
+    )
+    result = pipeline.evaluate_resume(provider, "m", "resume", _quals())
+    assert result["verdicts"]["r1"]["reasoning"] == ""

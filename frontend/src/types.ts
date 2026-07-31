@@ -13,6 +13,8 @@ export interface Qualification {
 export interface VerdictEntry {
   verdict: Verdict;
   evidence: string;
+  /** The model's explanation. Absent on screenings scored before it was captured. */
+  reasoning?: string;
 }
 
 export interface CandidateRow {

@@ -140,12 +140,19 @@ def to_excel(
                     cell.fill = VERDICT_FILLS[verdict]
                     cell.font = VERDICT_FONTS[verdict]
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-                evidence = verdict_info.get("evidence")
-                if evidence:
-                    # Evidence rides along as a cell note so the grid stays
-                    # scannable but the justification is never more than a
-                    # hover away — the same affordance the AG Grid view gives.
-                    cell.comment = Comment(evidence[:2000], "Resume Screening")
+                # The reasoning and the quote ride along as a cell note so the
+                # grid stays scannable but the justification is never more than
+                # a hover away — the same affordance the AG Grid view gives.
+                note = "\n\n".join(
+                    part
+                    for part in (
+                        verdict_info.get("reasoning"),
+                        (f'Evidence: "{verdict_info["evidence"]}"' if verdict_info.get("evidence") else ""),
+                    )
+                    if part
+                )
+                if note:
+                    cell.comment = Comment(note[:3000], "Resume Screening")
             elif key == "ai":
                 if row.get("error"):
                     cell.fill = FAIL_FILL

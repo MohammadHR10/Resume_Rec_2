@@ -287,10 +287,41 @@ def test_a_truncated_reply_is_reported_as_truncation_not_bad_json(transport):
         ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
 
 
-def test_every_completion_asks_for_an_explicit_token_budget(transport):
+def test_no_output_limit_is_imposed_by_default(transport, monkeypatch):
+    """Capping the answer is the operator's call. An evaluation over twenty
+    qualifications is legitimately long and must not be clipped from here."""
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
     transport["queue"].append(completion('{"name":"a","score":1}'))
     ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
-    assert transport["calls"][0]["body"]["max_tokens"] == base.DEFAULT_MAX_TOKENS
+    assert "max_tokens" not in transport["calls"][0]["body"]
+
+
+def test_an_operator_can_impose_a_limit(transport, monkeypatch):
+    monkeypatch.setenv("LLM_MAX_TOKENS", "1234")
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
+    assert transport["calls"][0]["body"]["max_tokens"] == 1234
+
+
+def test_a_blank_or_zero_limit_means_no_limit(transport, monkeypatch):
+    for value in ("", "0", "none"):
+        monkeypatch.setenv("LLM_MAX_TOKENS", value)
+        transport["queue"].append(completion('{"name":"a","score":1}'))
+        ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
+        assert "max_tokens" not in transport["calls"][-1]["body"], value
+
+
+def test_truncation_says_the_limit_was_the_gateways_when_none_is_set(transport, monkeypatch):
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+    transport["queue"].append(
+        FakeResponse(
+            200,
+            {"choices": [{"message": {"content": '{"a": 1'}, "finish_reason": "length"}],
+             "usage": {"completion_tokens": 512}},
+        )
+    )
+    with pytest.raises(base.LLMError, match="gateway's own default"):
+        ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
 
 
 def test_chat_without_a_schema_returns_plain_text(transport):

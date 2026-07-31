@@ -51,12 +51,8 @@ const STAGE_BLURBS: Record<Stage, string> = {
   rejected: "Rejected candidates. Restore any of them back to stage 1.",
 };
 
-function truncate(text: string, limit: number): string {
-  if (text.length <= limit) return text;
-  const cut = text.slice(0, limit);
-  const boundary = cut.lastIndexOf(" ");
-  return `${(boundary > limit * 0.6 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
-}
+/** Header and rows share this height, so the header reads as one more row. */
+const ROW_HEIGHT = 40;
 
 export class StageGrid {
   private api: GridApi<CandidateRow> | null = null;
@@ -117,6 +113,8 @@ export class StageGrid {
     if (!this.api) {
       this.api = createGrid<CandidateRow>(this.gridHost, {
         theme: screeningTheme,
+        headerHeight: ROW_HEIGHT,
+        rowHeight: ROW_HEIGHT,
         columnDefs: this.columns(),
         rowData: this.candidates,
         rowSelection: { mode: "multiRow", headerCheckbox: true },
@@ -197,13 +195,12 @@ export class StageGrid {
     for (const qual of this.qualifications) {
       columns.push({
         colId: `qual:${qual.id}`,
-        // A full qualification sentence wraps to six lines and pushes the rows
-        // off the screen; the whole sentence is one hover away in the tooltip.
-        headerName: `${qual.label}. ${truncate(qual.text, 46)}`,
+        // One line, the same height as a row. The full sentence is on hover
+        // and in the panel below — a header tall enough to hold it costs more
+        // screen than the candidates it labels.
+        headerName: `${qual.label}. ${qual.text}`,
         headerTooltip: `${qual.kind === "required" ? "Required" : "Preferred"}: ${qual.text}`,
         width: 145,
-        wrapHeaderText: true,
-        autoHeaderHeight: true,
         // Each stage shows only the qualifications it is about. Stage 1 gates
         // on required alone, so preferred columns are hidden there — their
         // presence was being read as "these are counting against me", which is
@@ -230,8 +227,7 @@ export class StageGrid {
           return `${entry.verdict}${evidence}`;
         },
         onCellClicked: (params) => {
-          const entry = params.data?.verdicts?.[qual.id];
-          if (entry) this.showEvidence(params.data!.name, qual, entry.verdict, entry.evidence);
+          if (params.data) this.showVerdictDetail(params.data, qual);
         },
       });
     }
@@ -249,23 +245,58 @@ export class StageGrid {
     return columns;
   }
 
-  private showEvidence(name: string, qual: Qualification, verdict: string, evidence: string): void {
+  /** Everything behind one verdict: the qualification, the model's reasoning,
+   *  and the quote it rested on. This is what a reviewer reads before deciding
+   *  whether to override the AI, so it shows the full text, never a snippet. */
+  private showVerdictDetail(row: CandidateRow, qual: Qualification): void {
     const host = document.getElementById("evidence-panel");
     if (!host) return;
+
+    const entry = row.verdicts?.[qual.id];
+    const verdict = entry?.verdict ?? "—";
+    const variant =
+      verdict === "Meets" ? "success" : verdict === "Partial" ? "warning" : verdict === "No" ? "danger" : "secondary";
+
+    const reasoning = entry?.reasoning?.trim();
+    const evidence = entry?.evidence?.trim();
+
     host.innerHTML = `
       <div class="card border-primary-subtle">
         <div class="card-header d-flex justify-content-between align-items-center">
-          <span><strong>${escapeHtml(name)}</strong> — ${qual.label} <span class="badge text-bg-light border">${verdict}</span></span>
-          <button class="btn btn-sm btn-close"></button>
+          <span>
+            <strong>${escapeHtml(row.name)}</strong>
+            <span class="text-muted">—</span>
+            <span class="badge text-bg-light border">${qual.label}</span>
+            <span class="badge text-bg-${variant}">${escapeHtml(verdict)}</span>
+            <span class="text-muted small ms-1">${qual.kind === "required" ? "required" : "preferred"}</span>
+          </span>
+          <button class="btn btn-sm btn-close" aria-label="Close"></button>
         </div>
         <div class="card-body">
-          <p class="text-muted small mb-2">${escapeHtml(qual.text)}</p>
-          <blockquote class="mb-0 fst-italic">${escapeHtml(evidence || "No evidence was quoted for this verdict.")}</blockquote>
+          <p class="mb-3"><span class="text-muted small d-block">Qualification</span>${escapeHtml(qual.text)}</p>
+          <div class="mb-3">
+            <span class="text-muted small d-block">Why the model reached this verdict</span>
+            ${
+              reasoning
+                ? `<div class="verdict-reasoning">${escapeHtml(reasoning)}</div>`
+                : `<div class="text-muted fst-italic">No reasoning was recorded for this verdict. Re-run the
+                     evaluation to capture it — reasoning was added after this screening was scored.</div>`
+            }
+          </div>
+          <div>
+            <span class="text-muted small d-block">Evidence quoted from the resume</span>
+            ${
+              evidence
+                ? `<blockquote class="mb-0 fst-italic border-start border-3 ps-3">${escapeHtml(evidence)}</blockquote>`
+                : `<div class="text-muted fst-italic">Nothing in the resume was quoted for this qualification.</div>`
+            }
+          </div>
         </div>
       </div>`;
     host.querySelector("button")!.addEventListener("click", () => {
       host.innerHTML = "";
     });
+    host.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   // -- toolbar --------------------------------------------------------------

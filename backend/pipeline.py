@@ -104,6 +104,10 @@ related degree where a specific one is required).
     - "No": the resume shows nothing that satisfies the qualification.
 - evidence: a short verbatim quote from the resume supporting the verdict. Use \
 an empty string when the verdict is "No".
+- reasoning: two or three sentences explaining why you reached that verdict — \
+what the resume does show, what it does not, and for "Partial" exactly what is \
+missing that a "Meets" would need. Write it for a hiring reviewer who will read \
+it while deciding whether to override you.
 
 Rules:
 - Return a verdict for every qualification, in the order given. Never omit one, \
@@ -169,6 +173,7 @@ def evaluation_schema(labels: list[str]) -> dict[str, Any]:
                         "qual_id": {"type": "string", "enum": labels},
                         "verdict": {"type": "string", "enum": list(VERDICTS)},
                         "evidence": {"type": "string"},
+                        "reasoning": {"type": "string"},
                     },
                 },
             },
@@ -277,6 +282,7 @@ def evaluate_resume(
         verdicts[qual_id] = {
             "verdict": verdict,
             "evidence": str(item.get("evidence") or "").strip(),
+            "reasoning": str(item.get("reasoning") or "").strip(),
         }
 
     return {

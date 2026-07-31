@@ -4,9 +4,28 @@
  *  when a harness turn degraded.
  */
 
+import DOMPurify from "dompurify";
+import { marked } from "marked";
+
 import { askChat, getChat } from "./api.ts";
 import type { GridAction, Stage } from "./types.ts";
 import { el, escapeHtml, formatDate, notify } from "./ui.ts";
+
+marked.setOptions({ gfm: true, breaks: true });
+
+/** Render an assistant answer as HTML.
+ *
+ * The model replies in markdown — headings, tables, bold — and rendering it as
+ * plain text made good answers hard to read. It is sanitised rather than
+ * trusted: resume text reaches the model as input and comes back inside these
+ * answers, so a candidate could otherwise put markup in their CV and have it
+ * executed in a reviewer's browser.
+ */
+function renderMarkdown(text: string): string {
+  return DOMPurify.sanitize(marked.parse(text ?? "", { async: false }) as string, {
+    USE_PROFILES: { html: true },
+  });
+}
 
 const MAX_ERROR_CHARS = 300;
 
@@ -136,7 +155,14 @@ export class ChatPanel {
     );
     bubble.appendChild(meta);
     const body = el("div", "chat-body");
-    body.textContent = content;
+    if (role === "user" || mode === "error") {
+      // The user's own words and error text are shown verbatim; only the
+      // model's answers are markdown.
+      body.textContent = content;
+    } else {
+      body.classList.add("chat-markdown");
+      body.innerHTML = renderMarkdown(content);
+    }
     bubble.appendChild(body);
     this.log.appendChild(bubble);
     this.log.scrollTop = this.log.scrollHeight;

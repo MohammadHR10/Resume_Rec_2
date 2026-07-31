@@ -31,10 +31,18 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 4
 RETRY_BASE_SECONDS = 1.0
 
-# Gateways differ on what they allow when the caller says nothing, and a small
-# default silently truncates mid-JSON — which surfaces as an unparseable
-# response rather than as "the reply was cut off". Ask explicitly.
-DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "8192"))
+def _configured_max_tokens() -> int | None:
+    """Output cap, or None for no cap — which is the default.
+
+    Capping the model's answer is the operator's decision, not this client's:
+    an evaluation covering twenty qualifications or a chat answer comparing
+    several candidates is legitimately long, and a ceiling chosen here would
+    silently clip it. Set ``LLM_MAX_TOKENS`` to impose one.
+    """
+    raw = os.getenv("LLM_MAX_TOKENS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return None
 
 # Idle connections get dropped by gateways between batches; closing after each
 # request trades a little latency for not eating a RemoteDisconnected mid-run.
@@ -203,7 +211,7 @@ class OpenAICompatibleProvider(LLMProvider):
         default_model: str = "",
         timeout: float = 180.0,
         supports_json_schema: bool = True,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = None,
     ) -> None:
         self.name = name
         self.label = label
@@ -212,7 +220,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.default_model = default_model
         self.timeout = timeout
         self.supports_json_schema = supports_json_schema
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens if max_tokens is not None else _configured_max_tokens()
 
     # -- configuration -----------------------------------------------------
 
@@ -346,7 +354,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             + list(messages),
             "temperature": 0,
-            "max_tokens": self.max_tokens,
+            **({"max_tokens": self.max_tokens} if self.max_tokens else {}),
             **self.extra_body(),
         }
         if strict_schema and self.supports_json_schema:
@@ -428,10 +436,15 @@ class OpenAICompatibleProvider(LLMProvider):
                     choice.get("finish_reason"),
                 )
                 if choice.get("finish_reason") == "length":
+                    spent = usage.get("completion_tokens", "?")
+                    where = (
+                        f"the configured LLM_MAX_TOKENS limit of {self.max_tokens}"
+                        if self.max_tokens
+                        else "the gateway's own default output limit (no limit is set here)"
+                    )
                     raise LLMError(
-                        f"{self.label}: the model's reply was cut off after "
-                        f"{usage.get('completion_tokens', self.max_tokens)} tokens, at the "
-                        f"{self.max_tokens}-token output limit. Raise LLM_MAX_TOKENS."
+                        f"{self.label}: the model's reply was cut off after {spent} tokens, at "
+                        f"{where}. Set LLM_MAX_TOKENS higher to raise it."
                     )
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 last_error = f"malformed response: {exc}"
