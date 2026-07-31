@@ -831,6 +831,95 @@ def audit_corpus() -> dict[str, Any]:
     return {"root": str(audit.CORPUS_ROOT), "corpora": audit.describe_corpora()}
 
 
+@app.post("/api/audits/corpus/{name}/screening")
+async def screening_from_corpus(name: str) -> dict[str, Any]:
+    """Build a screening out of a corpus, with no upload step.
+
+    A corpus ships the position description its resumes were written against,
+    so making someone drag those same files into a browser to get started is
+    busywork that can also go wrong. This reads both straight off disk.
+    """
+    try:
+        corpus_dir = audit.resolve_corpus(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    description = corpus_dir / "position-description.pdf"
+    if not description.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{name}' corpus has no position-description.pdf to build a screening from.",
+        )
+
+    provider, provider_name, model = registry.active()
+    if not model:
+        raise HTTPException(
+            status_code=400, detail="No model is selected — choose one on the Configuration page."
+        )
+
+    text = extract_text_from_pdf(str(description))
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="The position description had no readable text.")
+
+    try:
+        parsed = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: jd_parse.parse_qualifications(provider, text, model=model)
+        )
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    screening_id = db.new_id()
+    db.execute(
+        "INSERT INTO screening (id, job_title, jd_text, jd_filename, status, quals_confirmed, "
+        "provider, model, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            screening_id,
+            parsed["job_title"] or f"{name} corpus",
+            text,
+            description.name,
+            "draft",
+            0,
+            provider_name,
+            model,
+            db.now(),
+        ),
+    )
+    _replace_qualifications(
+        screening_id,
+        [{"text": t, "kind": "required"} for t in parsed["required"]]
+        + [{"text": t, "kind": "preferred"} for t in parsed["preferred"]],
+    )
+
+    loop = asyncio.get_event_loop()
+    added = 0
+    for path in audit.list_corpus(corpus_dir):
+        resume_text = await loop.run_in_executor(None, extract_text_from_pdf, path)
+        if not resume_text.strip():
+            continue
+        db.execute(
+            "INSERT INTO candidate (id, screening_id, name, source_files, resume_text, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                db.new_id(),
+                screening_id,
+                display_name(path),
+                json.dumps([os.path.basename(path)]),
+                resume_text,
+                db.now(),
+            ),
+        )
+        added += 1
+
+    return {
+        "screeningId": screening_id,
+        "jobTitle": parsed["job_title"],
+        "qualifications": _qual_payload(screening_id),
+        "candidates": added,
+        "provider": provider_name,
+        "model": model,
+    }
+
+
 @app.post("/api/audits")
 async def start_audit(body: AuditStart) -> dict[str, Any]:
     screening = _screening_or_404(body.screeningId)

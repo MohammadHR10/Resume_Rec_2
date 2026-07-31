@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import zipfile
 from pathlib import Path
@@ -559,6 +560,26 @@ def test_corpus_endpoint_lists_every_corpus(client):
     new = corpora["swe_ii_corpus"]
     assert new["isDefault"] is True
     assert new["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+
+
+def test_a_screening_can_be_built_from_a_corpus_without_any_upload(client, stub):
+    """A corpus ships the position description its resumes were written
+    against; making someone drag those same files into a browser is busywork."""
+    payload = client.post("/api/audits/corpus/swe_ii_corpus/screening").json()
+
+    assert payload["candidates"] == 12
+    assert payload["qualifications"]
+    rows = db.query(
+        "SELECT name, source_files FROM candidate WHERE screening_id=?", (payload["screeningId"],)
+    )
+    files = {json.loads(r["source_files"])[0] for r in rows}
+    assert "position-description.pdf" not in files, "the JD is not a candidate"
+    assert "Jordan_Avery_senior.pdf" in files
+
+
+def test_building_a_screening_from_an_unknown_corpus_is_refused(client, stub):
+    # Path traversal is covered at the resolver in test_audit.py.
+    assert client.post("/api/audits/corpus/nope/screening").status_code == 400
 
 
 def test_an_audit_refuses_a_corpus_with_nothing_to_compare(client, stub):

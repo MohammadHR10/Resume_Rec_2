@@ -56,8 +56,29 @@ mandatory (often labeled Preferred, Desired, Nice to Have, or stated with \
 Rules for every item:
 - One atomic, verdict-able requirement per item. A reader with a resume in hand \
 must be able to answer Meets / Partial / No about it without splitting it further.
-- Split compound statements. "Bachelor's degree in Computer Science and 3 years \
-of Java development" becomes two items.
+
+- SPLIT a statement that demands two independent things at once. "Bachelor's \
+degree in Computer Science and 3 years of Java development" becomes two items, \
+because a candidate can satisfy one and fail the other.
+
+- DO NOT SPLIT a list of alternatives. When the document says "or", "one of", \
+"such as", "including", or gives examples in parentheses, those are ways to \
+satisfy a SINGLE requirement — keep them together in one item, with the \
+alternatives intact.
+    - "Proficiency in Python, Java, or C#" is ONE item. It is not three.
+    - "Experience with CI/CD pipelines (Azure DevOps, GitHub Actions, GitLab \
+CI, or Jenkins)" is ONE item. The tools are examples, not four requirements.
+    - "A relational database — PostgreSQL, MySQL, or SQL Server — including \
+schema design and query tuning" is ONE item. Schema design and query tuning \
+describe how the database is used; they are not separate qualifications.
+    - "Degree in Computer Science, Software Engineering, or a related field" is \
+ONE item.
+  Splitting these turns one requirement into several a candidate must satisfy \
+all of, which changes what the position asks for.
+
+- Never emit a bare technology name, tool name or fragment as its own item. If \
+you have written an item that is just "GitHub Actions", "unit tests" or \
+"branching", it belongs inside the requirement it came from.
 - Keep the document's own wording and any measurable threshold (years, degree \
 level, certification name, specific technology).
 - Do not invent qualifications that are not in the document.
