@@ -999,18 +999,42 @@ def get_audit(audit_id: str) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM audit_run WHERE id=?", (audit_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Audit run not found")
-    comparison = audit.build_comparison(row) if row["status"] == "done" else {}
+    done = row["status"] == "done"
+    comparison = audit.build_comparison(row) if done else {}
+    grouped = audit.build_grouped(row) if done else {}
     return {
         "id": row["id"],
         "provider": row["provider"],
         "model": row["model"],
+        "corpus": row["corpus"],
         "status": row["status"],
         "error": row["error"],
         "createdAt": row["created_at"],
         "qualifications": comparison.get("qualifications", []),
         "comparisons": comparison.get("comparisons", []),
         "counts": comparison.get("summary", {}),
+        "levels": grouped.get("levels", []),
     }
+
+
+@app.delete("/api/audits/{audit_id}")
+def delete_audit(audit_id: str) -> dict[str, Any]:
+    """Delete a run and the hidden screening it created.
+
+    The screening holding the audit's scored corpus is invisible in the UI, so
+    without this it would accumulate a copy of the corpus per run with no way
+    to reach it.
+    """
+    row = db.query_one("SELECT screening_id FROM audit_run WHERE id=?", (audit_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Audit run not found")
+
+    if row["screening_id"]:
+        db.execute(
+            "DELETE FROM screening WHERE id=? AND kind='audit'", (row["screening_id"],)
+        )
+    db.execute("DELETE FROM audit_run WHERE id=?", (audit_id,))
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------------------

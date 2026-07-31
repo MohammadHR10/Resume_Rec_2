@@ -8,6 +8,7 @@
  */
 
 import {
+  deleteAudit,
   getAudit,
   getConfig,
   getCorpus,
@@ -20,7 +21,7 @@ import {
 } from "./api.ts";
 import { JdIntake } from "./jdIntake.ts";
 import { showProgress } from "./progress.ts";
-import type { AppConfig, AuditComparison, AuditRun, Qualification } from "./types.ts";
+import type { AppConfig, AuditComparison, AuditLevel, AuditRun, Qualification } from "./types.ts";
 import { busy, el, escapeHtml, formatDate, notify } from "./ui.ts";
 
 export async function renderAuditPage(root: HTMLElement): Promise<void> {
@@ -104,13 +105,15 @@ function corpusSummary(corpus: Corpus): HTMLElement {
       );
     }
     panel.appendChild(chips);
-    panel.appendChild(
-      el(
-        "p",
-        "text-muted small mb-0",
-        "Controls are pairs where the added sentence discloses nothing — the yardstick for everything else.",
-      ),
-    );
+    if (corpus.byAttribute.some((entry) => entry.attribute === "control")) {
+      panel.appendChild(
+        el(
+          "p",
+          "text-muted small mb-0",
+          "Controls are pairs where the added sentence discloses nothing — the yardstick for everything else.",
+        ),
+      );
+    }
   } else {
     panel.appendChild(
       el(
@@ -412,9 +415,33 @@ function historyCard(
         run.status === "done" ? "" : ` · ${escapeHtml(run.status)}`
       }</td>
       <td class="text-end"></td>`;
-    const view = el("button", "btn btn-sm btn-outline-primary", "View") as HTMLButtonElement;
+    const view = el("button", "btn btn-sm btn-outline-primary me-1", "View") as HTMLButtonElement;
     view.addEventListener("click", () => void renderRun(results, run.id));
-    row.lastElementChild!.appendChild(view);
+
+    const remove = el("button", "btn btn-sm btn-outline-danger border-0", "Delete") as HTMLButtonElement;
+    remove.title = "Delete this run and the scored corpus it stored";
+    remove.addEventListener("click", async () => {
+      if (
+        !window.confirm(
+          `Delete the ${run.model} run from ${formatDate(run.created_at)}?\n\n` +
+            "This also removes the scored copy of the corpus it kept, and cannot be undone.",
+        )
+      ) {
+        return;
+      }
+      const done = busy(remove, "");
+      try {
+        await deleteAudit(run.id);
+        row.remove();
+        results.innerHTML = "";
+        notify("Run deleted.", "success");
+      } catch (error) {
+        done();
+        notify(`Could not delete that run: ${(error as Error).message}`, "danger");
+      }
+    });
+
+    row.lastElementChild!.append(view, remove);
     tbody.appendChild(row);
   }
   table.appendChild(tbody);
@@ -449,6 +476,13 @@ async function renderRun(container: HTMLElement, auditId: string): Promise<void>
   }
 
   container.appendChild(headline(run));
+
+  // The grouped view leads: at a given experience level, where does each class
+  // land? That is the question a hiring committee asks, and the corpus is built
+  // so every resume in a level should score identically.
+  if (run.levels?.length) {
+    container.appendChild(groupedView(run.levels));
+  }
 
   const measured = run.comparisons.filter((c) => !c.isControl);
   const controls = run.comparisons.filter((c) => c.isControl);
@@ -518,6 +552,98 @@ function headline(run: AuditRun): HTMLElement {
     ),
   );
   return banner;
+}
+
+/** Candidates grouped by experience level, then by protected class.
+ *
+ * Every resume within a level satisfies exactly the same qualifications, so
+ * the whole column should read the same number. Anywhere it doesn't, the model
+ * scored identical claims differently depending on whose name was on them.
+ */
+function groupedView(levels: AuditLevel[]): HTMLElement {
+  const card = el("div", "card mb-3");
+  card.appendChild(
+    el(
+      "div",
+      "card-header fw-semibold d-flex justify-content-between align-items-center",
+      `<span>Results by experience level and class</span>
+       <span class="text-muted small fw-normal">every resume in a level has identical qualifications</span>`,
+    ),
+  );
+  const body = el("div", "card-body");
+
+  for (const level of levels) {
+    const shouldPass = level.expectedStage1 === "pass";
+    const section = el("div", "mb-4");
+    section.appendChild(
+      el(
+        "h6",
+        "mb-1",
+        `<span class="text-capitalize">${escapeHtml(level.level)}</span>
+         <span class="text-muted fw-normal small">
+           — designed as ${level.expectedRequired}/${level.requiredTotal} required,
+           ${level.expectedPreferred}/${level.preferredTotal} preferred,
+           should ${escapeHtml(level.expectedStage1 ?? "")} stage 1
+         </span>`,
+      ),
+    );
+
+    const table = el("table", "table table-sm align-middle mb-0");
+    table.innerHTML = `
+      <thead><tr>
+        <th style="width:34%">Class</th>
+        <th class="text-center">Required met</th>
+        <th class="text-center">Preferred met</th>
+        <th class="text-center">Advanced</th>
+        <th>Candidates</th>
+      </tr></thead>`;
+    const tbody = el("tbody");
+
+    for (const group of level.classes) {
+      const isReference = group.attribute === "baseline";
+      // Off-expectation on required coverage, or an advancement outcome that
+      // contradicts the level's design — the two things worth the eye.
+      const offCoverage =
+        level.expectedRequired !== null && group.meanRequired !== level.expectedRequired;
+      const offOutcome = shouldPass
+        ? group.passed < group.total
+        : group.passed > 0;
+
+      const row = el("tr", offOutcome ? "table-danger" : offCoverage ? "table-warning" : "");
+      const label = isReference
+        ? "<strong>Unmarked</strong> <span class='text-muted small'>(reference)</span>"
+        : `<span class="text-muted small">${escapeHtml(group.attributeLabel)}</span> — ${escapeHtml(group.value)}`;
+
+      row.innerHTML = `
+        <td>${label}</td>
+        <td class="text-center">${group.meanRequired}<span class="text-muted">/${level.requiredTotal}</span></td>
+        <td class="text-center">${group.meanPreferred}<span class="text-muted">/${level.preferredTotal}</span></td>
+        <td class="text-center">${
+          offOutcome
+            ? `<span class="badge text-bg-danger">${group.passed}/${group.total}</span>`
+            : `<span class="badge text-bg-light border">${group.passed}/${group.total}</span>`
+        }</td>
+        <td class="small text-muted">${group.candidates
+          .map((c) => escapeHtml(c.name))
+          .join(", ")}</td>`;
+      tbody.appendChild(row);
+    }
+
+    table.appendChild(tbody);
+    section.appendChild(table);
+    body.appendChild(section);
+  }
+
+  body.appendChild(
+    el(
+      "p",
+      "text-muted small mb-0",
+      "Rows are flagged amber where average required coverage differs from the level's design, and red where the advancement outcome contradicts it. With one candidate per class per level, a single row is suggestive rather than conclusive — look for a direction that repeats across levels.",
+    ),
+  );
+
+  card.appendChild(body);
+  return card;
 }
 
 function comparisonRow(comparison: AuditComparison, quals: Qualification[]): HTMLElement {

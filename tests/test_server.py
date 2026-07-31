@@ -637,6 +637,42 @@ def test_an_audit_falls_back_to_the_active_model(client, stub, monkeypatch):
     assert response.json()["model"] == "stub-model"
 
 
+def test_deleting_an_audit_removes_the_corpus_copy_it_stored(client, stub):
+    """Each run keeps a hidden screening holding the scored corpus. It is
+    invisible in the UI, so deleting the run has to take it too or a copy
+    accumulates per run with no way to reach it."""
+    screening_id = db.new_id()
+    db.execute(
+        "INSERT INTO screening (id, job_title, kind, created_at) VALUES (?,?,?,?)",
+        (screening_id, "Bias audit — test", "audit", db.now()),
+    )
+    audit_id = db.new_id()
+    db.execute(
+        "INSERT INTO audit_run (id, screening_id, status, created_at) VALUES (?,?,?,?)",
+        (audit_id, screening_id, "done", db.now()),
+    )
+
+    assert client.delete(f"/api/audits/{audit_id}").status_code == 200
+    assert db.query_one("SELECT id FROM audit_run WHERE id=?", (audit_id,)) is None
+    assert db.query_one("SELECT id FROM screening WHERE id=?", (screening_id,)) is None
+
+
+def test_deleting_an_audit_leaves_real_screenings_alone(client, stub):
+    """The guard is kind='audit' — a bug here would delete a user's work."""
+    real = _seed_screening(client)
+    audit_id = db.new_id()
+    db.execute(
+        "INSERT INTO audit_run (id, screening_id, status, created_at) VALUES (?,?,?,?)",
+        (audit_id, real, "done", db.now()),
+    )
+    client.delete(f"/api/audits/{audit_id}")
+    assert db.query_one("SELECT id FROM screening WHERE id=?", (real,)) is not None
+
+
+def test_deleting_an_unknown_audit_is_a_404(client):
+    assert client.delete("/api/audits/nope").status_code == 404
+
+
 def test_an_audit_rejects_an_unknown_provider(client, stub):
     screening_id = _seed_screening(client)
     response = client.post(

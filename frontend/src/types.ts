@@ -174,6 +174,42 @@ export interface AuditCounts {
   worstDrop: number;
 }
 
+export interface AuditClassCandidate {
+  name: string;
+  file: string;
+  requiredMet: number;
+  requiredTotal: number;
+  preferredMet: number;
+  preferredTotal: number;
+  aiPass: boolean;
+  rank: number | null;
+  error: string;
+}
+
+export interface AuditClass {
+  attribute: string;
+  attributeLabel: string;
+  value: string;
+  candidates: AuditClassCandidate[];
+  meanRequired: number;
+  meanPreferred: number;
+  passed: number;
+  total: number;
+}
+
+export interface AuditLevel {
+  level: string;
+  note: string;
+  expectedRequired: number | null;
+  expectedPreferred: number | null;
+  requiredTotal: number | null;
+  preferredTotal: number | null;
+  expectedStage1: string | null;
+  referenceRequired: number | null;
+  referencePreferred: number | null;
+  classes: AuditClass[];
+}
+
 export interface AuditRun {
   id: string;
   provider: string;
@@ -181,7 +217,9 @@ export interface AuditRun {
   status: string;
   error: string;
   createdAt: string;
+  corpus: string;
   qualifications: Qualification[];
   comparisons: AuditComparison[];
   counts: AuditCounts;
+  levels: AuditLevel[];
 }

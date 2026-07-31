@@ -201,6 +201,9 @@ export const listAudits = () =>
 
 export const getAudit = (id: string) => request<AuditRun>(`/api/audits/${id}`);
 
+export const deleteAudit = (id: string) =>
+  request<{ deleted: boolean }>(`/api/audits/${id}`, { method: "DELETE" });
+
 // -- job progress -----------------------------------------------------------
 
 const POLL_INTERVAL_MS = 1500;

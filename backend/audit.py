@@ -582,6 +582,137 @@ def build_comparison(run: dict[str, Any]) -> dict[str, Any]:
     return {"qualifications": quals, "comparisons": comparisons, "summary": _counts(comparisons)}
 
 
+#: Order the classes appear in, so a reader always meets the unmarked resume
+#: first and reads the rest against it.
+CLASS_ORDER = ("baseline", "gender", "race", "religion")
+
+CLASS_LABELS = {"baseline": "Unmarked", "gender": "Gender", "race": "Race / Ethnicity",
+                "religion": "Religion"}
+
+
+def build_grouped(run: dict[str, Any]) -> dict[str, Any]:
+    """Every candidate grouped by skill level, then by protected class.
+
+    This is the view that answers the question a hiring committee asks: at a
+    given experience level, where do candidates of each class land? It needs no
+    pairing — the corpus is built so every resume at a level satisfies exactly
+    the same qualifications, so the expected score is known and any spread
+    within a level is the finding.
+    """
+    screening_id = run.get("screening_id")
+    if not screening_id:
+        return {"levels": []}
+
+    corpus_dir = resolve_corpus(run.get("corpus") or None)
+    manifest_path = corpus_dir / "corpus.json"
+    if not manifest_path.exists():
+        return {"levels": []}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {"levels": []}
+
+    by_file = {entry["file"]: entry for entry in manifest.get("resumes", [])}
+    expectations = manifest.get("levels", {})
+
+    scored: dict[str, dict[str, Any]] = {}
+    for row in pipeline.load_rows(screening_id):
+        for filename in row.get("source_files") or []:
+            scored[filename] = row
+
+    levels: list[dict[str, Any]] = []
+    for level in ("senior", "junior", "unqualified"):
+        members = [
+            (entry, scored[entry["file"]])
+            for entry in manifest.get("resumes", [])
+            if entry["level"] == level and entry["file"] in scored
+        ]
+        if not members:
+            continue
+
+        # Rank within the level: everyone here has identical qualifications, so
+        # position is decided entirely by how the model read the same claims.
+        ranked = rank_candidates(
+            [
+                {
+                    "id": entry["file"],
+                    "name": entry.get("name") or row["name"],
+                    "required_met": row["required_met"],
+                    "preferred_met": row["preferred_met"],
+                }
+                for entry, row in members
+            ]
+        )
+        rank_of = {row["id"]: row["rank"] for row in ranked}
+
+        classes: dict[str, dict[str, Any]] = {}
+        for entry, row in members:
+            role = entry.get("role", "baseline")
+            value = (
+                "Unmarked"
+                if role == "baseline"
+                else str(entry.get(role if role != "gender" else "gender", "")).title()
+            )
+            key = f"{role}:{value}"
+            bucket = classes.setdefault(
+                key,
+                {
+                    "attribute": role,
+                    "attributeLabel": CLASS_LABELS.get(role, role.title()),
+                    "value": value,
+                    "candidates": [],
+                },
+            )
+            bucket["candidates"].append(
+                {
+                    # The manifest's name, not one derived from the filename —
+                    # that yields "Elizabeth Ellis senior gender female".
+                    "name": entry.get("name") or row["name"],
+                    "file": entry["file"],
+                    "requiredMet": row["required_met"],
+                    "requiredTotal": row["required_total"],
+                    "preferredMet": row["preferred_met"],
+                    "preferredTotal": row["preferred_total"],
+                    "aiPass": bool(row["ai_pass"]),
+                    "rank": rank_of.get(entry["file"]),
+                    "error": row.get("error") or "",
+                }
+            )
+
+        ordered = sorted(
+            classes.values(),
+            key=lambda c: (CLASS_ORDER.index(c["attribute"]), c["value"]),
+        )
+        for bucket in ordered:
+            people = bucket["candidates"]
+            bucket["candidates"] = sorted(people, key=lambda c: (c["rank"] or 0, c["name"]))
+            bucket["meanRequired"] = round(sum(c["requiredMet"] for c in people) / len(people), 2)
+            bucket["meanPreferred"] = round(sum(c["preferredMet"] for c in people) / len(people), 2)
+            bucket["passed"] = sum(1 for c in people if c["aiPass"])
+            bucket["total"] = len(people)
+
+        expected = expectations.get(level, {})
+        unmarked = next((c for c in ordered if c["attribute"] == "baseline"), None)
+        levels.append(
+            {
+                "level": level,
+                "note": expected.get("note", ""),
+                "expectedRequired": expected.get("required_met"),
+                "expectedPreferred": expected.get("preferred_met"),
+                "requiredTotal": expected.get("required_total"),
+                "preferredTotal": expected.get("preferred_total"),
+                "expectedStage1": expected.get("expected_stage1"),
+                # The unmarked resumes are the reference every other class in
+                # this level is read against.
+                "referenceRequired": unmarked["meanRequired"] if unmarked else None,
+                "referencePreferred": unmarked["meanPreferred"] if unmarked else None,
+                "classes": ordered,
+            }
+        )
+
+    return {"levels": levels}
+
+
 def _side(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "file": (row.get("source_files") or [""])[0],
@@ -717,6 +848,22 @@ async def run_audit(
             "UPDATE audit_run SET screening_id=? WHERE id=?", (audit_screening_id, audit_id)
         )
 
+        # A generated corpus names its people; deriving a name from the
+        # filename instead yields "Elizabeth Ellis senior gender female".
+        manifest_names: dict[str, str] = {}
+        manifest_file = (corpus_dir or CORPUS_DIR) / "corpus.json"
+        if manifest_file.exists():
+            try:
+                manifest_names = {
+                    entry["file"]: entry["name"]
+                    for entry in json.loads(manifest_file.read_text(encoding="utf-8")).get(
+                        "resumes", []
+                    )
+                    if entry.get("name")
+                }
+            except (ValueError, KeyError, OSError):
+                pass
+
         # -- evaluate every distinct resume once ---------------------------
         all_paths = sorted({p for p in baseline_paths} | {p["variant_path"] for p in pairs})
         job["total"] = len(all_paths)
@@ -733,7 +880,7 @@ async def run_audit(
                 (
                     candidate_id,
                     audit_screening_id,
-                    name,
+                    manifest_names.get(os.path.basename(path), name),
                     json.dumps([os.path.basename(path)]),
                     text,
                     db.now(),
