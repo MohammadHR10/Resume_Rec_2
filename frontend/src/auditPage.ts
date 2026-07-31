@@ -1,10 +1,9 @@
-/** Bias audit: every baseline resume shown beside its protected-class variant.
+/** Bias audit: candidates grouped by experience level, then by protected class.
  *
- * The question a reviewer is asking is "did adding this sentence change how the
- * AI judged this person?", so the report answers it literally — the two scored
- * resumes side by side, with the inserted sentence quoted and every changed
- * judgement highlighted. No statistics vocabulary, because none is needed to
- * read one resume against its own copy.
+ * Every resume within a level satisfies identical qualifications by
+ * construction, so the whole column should read one number. Anywhere it does
+ * not, the model scored the same claims differently depending on whose name was
+ * on them — which needs no pairing to see, and no statistics vocabulary to say.
  */
 
 import {
@@ -21,7 +20,7 @@ import {
 } from "./api.ts";
 import { JdIntake } from "./jdIntake.ts";
 import { showProgress } from "./progress.ts";
-import type { AppConfig, AuditComparison, AuditLevel, AuditRun, Qualification } from "./types.ts";
+import type { AppConfig, AuditLevel, AuditRun } from "./types.ts";
 import { busy, el, escapeHtml, formatDate, notify } from "./ui.ts";
 
 export async function renderAuditPage(root: HTMLElement): Promise<void> {
@@ -40,7 +39,7 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
     el(
       "p",
       "text-muted",
-      "Each resume is scored twice: once as written, and once with a single sentence added that discloses a protected characteristic. Nothing else differs, so any change in the score came from that sentence.",
+      "Every resume at a given experience level makes identical qualification claims — only the name, pronouns or affiliation differ. So each experience level should score as one block, and any spread between classes is the model reading the same claims differently.",
     ),
   );
 
@@ -475,80 +474,82 @@ async function renderRun(container: HTMLElement, auditId: string): Promise<void>
     return;
   }
 
-  container.appendChild(headline(run));
-
-  // The grouped view leads: at a given experience level, where does each class
-  // land? That is the question a hiring committee asks, and the corpus is built
-  // so every resume in a level should score identically.
-  if (run.levels?.length) {
-    container.appendChild(groupedView(run.levels));
-  }
-
-  const measured = run.comparisons.filter((c) => !c.isControl);
-  const controls = run.comparisons.filter((c) => c.isControl);
-
-  const list = el("div", "card");
-  list.appendChild(
-    el(
-      "div",
-      "card-header fw-semibold d-flex justify-content-between align-items-center",
-      `<span>Comparisons</span><span class="text-muted small fw-normal">click any row to see the two resumes scored side by side</span>`,
-    ),
-  );
-  const body = el("div", "card-body p-0");
-  for (const comparison of measured) {
-    body.appendChild(comparisonRow(comparison, run.qualifications));
-  }
-  if (controls.length) {
-    body.appendChild(
+  if (!run.levels?.length) {
+    // A run over a corpus with no manifest — the old SWE_pdf one — has no
+    // skill levels to group by, so there is nothing this view can show.
+    container.appendChild(
       el(
         "div",
-        "px-3 py-2 bg-body-tertiary border-top border-bottom small fw-semibold",
-        "Controls — nothing meaningful was added to these",
+        "alert alert-secondary",
+        `This run used the <code>${escapeHtml(run.corpus || "unknown")}</code> corpus, which has no
+         skill levels defined, so it cannot be grouped by experience. Re-run against a corpus
+         that declares them, or delete this run.`,
       ),
     );
-    for (const comparison of controls) {
-      body.appendChild(comparisonRow(comparison, run.qualifications));
-    }
+    return;
   }
-  list.appendChild(body);
-  container.appendChild(list);
+
+  container.appendChild(headline(run));
+  container.appendChild(groupedView(run.levels));
 }
 
 function headline(run: AuditRun): HTMLElement {
-  const counts = run.counts;
-  const clean = counts.advancementChanges === 0 && counts.lostGround === 0;
-  const banner = el("div", `alert ${clean ? "alert-success" : "alert-warning"}`);
+  const summary = run.summary;
+  const flips = summary.advancementFlips ?? [];
+  const drifts = summary.coverageDepartures ?? [];
+  const banner = el("div", `alert ${flips.length ? "alert-danger" : drifts.length ? "alert-warning" : "alert-success"}`);
 
   banner.appendChild(
     el(
       "h5",
       "alert-heading",
-      counts.advancementChanges === 0
-        ? "No candidate's advancement changed"
-        : `${counts.advancementChanges} candidate(s) would have been advanced differently`,
+      flips.length === 0
+        ? "Every class advanced as its experience level expects"
+        : `${flips.length} class${flips.length === 1 ? "" : "es"} did not advance as expected`,
     ),
   );
+
+  if (flips.length) {
+    banner.appendChild(
+      el(
+        "ul",
+        "mb-2",
+        flips
+          .map(
+            (flip) =>
+              `<li><strong>${escapeHtml(flip.label)}</strong> at <strong>${escapeHtml(flip.level)}</strong>
+                 should ${escapeHtml(flip.expected)} — ${escapeHtml(flip.candidates.join(", "))} did not.</li>`,
+          )
+          .join(""),
+      ),
+    );
+  }
+
   banner.appendChild(
     el(
       "p",
       "mb-1",
-      `Out of <strong>${counts.comparisons}</strong> comparisons: ` +
-        `<strong>${counts.identical}</strong> scored exactly the same, ` +
-        `<strong>${counts.sameTotal}</strong> met the same number of qualifications but were judged differently on some, ` +
-        `<strong>${counts.lostGround}</strong> lost ground after the disclosure, ` +
-        `<strong>${counts.gainedGround}</strong> gained. ` +
-        `In total <strong>${counts.judgmentsChanged}</strong> of ${counts.judgmentsCompared} individual qualification judgements changed.`,
+      drifts.length === 0
+        ? `All <strong>${summary.groups}</strong> class groups met their level's designed coverage exactly.`
+        : `<strong>${drifts.length}</strong> of ${summary.groups} class groups departed from their level's designed coverage: ` +
+          drifts
+            .map(
+              (drift) =>
+                `${escapeHtml(drift.label)} at ${escapeHtml(drift.level)} (${drift.actual} vs ${drift.expected})`,
+            )
+            .join("; ") +
+          ".",
     ),
   );
+
   banner.appendChild(
     el(
       "p",
       "mb-0 small",
-      `Model: <code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code>. ` +
-        (counts.controlsUnstable > 0
-          ? `<strong>Caution:</strong> ${counts.controlsUnstable} of ${counts.controls} control comparisons also changed, even though nothing was disclosed in them. Movements of that size cannot be attributed to the disclosure — rows below are flagged where this applies.`
-          : `All ${counts.controls} control comparisons scored identically, so movements below are attributable to the disclosure.`),
+      `Model: <code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code> · corpus
+       <code>${escapeHtml(run.corpus)}</code>. Every resume within an experience level satisfies
+       identical qualifications, so any difference between classes is the model reading the same
+       claims differently depending on the name attached to them.`,
     ),
   );
   return banner;
@@ -646,114 +647,3 @@ function groupedView(levels: AuditLevel[]): HTMLElement {
   return card;
 }
 
-function comparisonRow(comparison: AuditComparison, quals: Qualification[]): HTMLElement {
-  const wrapper = el("div", "border-bottom");
-  const header = el("div", "d-flex align-items-center gap-3 px-3 py-2 comparison-row");
-  header.style.cursor = "pointer";
-
-  const verdictBadge = comparison.netChange < 0
-    ? `<span class="badge text-bg-danger">lost ${Math.abs(comparison.netChange)}</span>`
-    : comparison.netChange > 0
-      ? `<span class="badge text-bg-warning">gained ${comparison.netChange}</span>`
-      : comparison.changed.length
-        ? `<span class="badge text-bg-secondary">same total</span>`
-        : `<span class="badge text-bg-success">identical</span>`;
-
-  header.innerHTML = `
-    <span class="fw-semibold" style="min-width:11rem">${escapeHtml(comparison.candidate)}</span>
-    <span class="badge text-bg-light border">${escapeHtml(comparison.attributeLabel)}</span>
-    <span style="min-width:9rem">${comparison.baseline.met}/${comparison.baseline.total}
-      <span class="text-muted">&rarr;</span> ${comparison.variant.met}/${comparison.variant.total}</span>
-    ${verdictBadge}
-    <span class="text-muted small">${comparison.changed.length} judgement(s) changed</span>
-    ${comparison.matchesControl ? '<span class="badge text-bg-secondary" title="This resume moves by the same amount even when nothing is disclosed, so the movement is not attributable to the disclosure.">matches its control</span>' : ""}
-    ${comparison.advancementChanged ? '<span class="badge text-bg-danger">advancement changed</span>' : ""}
-    <span class="ms-auto text-muted">▾</span>`;
-
-  const detail = el("div", "px-3 pb-3 d-none");
-  let built = false;
-  header.addEventListener("click", () => {
-    if (!built) {
-      detail.appendChild(sideBySide(comparison, quals));
-      built = true;
-    }
-    detail.classList.toggle("d-none");
-  });
-
-  wrapper.append(header, detail);
-  return wrapper;
-}
-
-function sideBySide(comparison: AuditComparison, quals: Qualification[]): HTMLElement {
-  const panel = el("div");
-
-  if (comparison.added.length) {
-    const added = el("div", "alert alert-light border mb-3");
-    added.appendChild(el("div", "small text-muted mb-1", "Text added to the original resume:"));
-    for (const sentence of comparison.added) {
-      added.appendChild(el("div", "fst-italic", `“${escapeHtml(sentence)}”`));
-    }
-    panel.appendChild(added);
-  }
-
-  const table = el("table", "table table-sm align-middle mb-0");
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th style="width:45%">Qualification</th>
-        <th class="text-center">Original resume</th>
-        <th class="text-center">With disclosure</th>
-        <th></th>
-      </tr>
-    </thead>`;
-
-  const body = el("tbody");
-  const summary = el("tr", "table-light fw-semibold");
-  summary.innerHTML = `
-    <td>Qualifications met</td>
-    <td class="text-center">${comparison.baseline.met} of ${comparison.baseline.total}</td>
-    <td class="text-center">${comparison.variant.met} of ${comparison.variant.total}</td>
-    <td></td>`;
-  body.appendChild(summary);
-
-  const recommendation = el("tr", "table-light fw-semibold");
-  recommendation.innerHTML = `
-    <td>AI recommendation</td>
-    <td class="text-center">${badge(comparison.baseline.aiPass)}</td>
-    <td class="text-center">${badge(comparison.variant.aiPass)}</td>
-    <td>${comparison.advancementChanged ? '<span class="text-danger fw-semibold">changed</span>' : ""}</td>`;
-  body.appendChild(recommendation);
-
-  for (const qual of quals) {
-    const before = comparison.baseline.verdicts[qual.id];
-    const after = comparison.variant.verdicts[qual.id];
-    const changed = comparison.changed.includes(qual.id);
-    const row = el("tr", changed ? "table-warning" : "");
-    row.innerHTML = `
-      <td><span class="badge text-bg-light border me-1">${qual.label}</span>${escapeHtml(qual.text)}</td>
-      <td class="text-center ${verdictClass(before?.verdict)}" title="${escapeHtml(before?.evidence || "")}">${before?.verdict ?? "—"}</td>
-      <td class="text-center ${verdictClass(after?.verdict)}" title="${escapeHtml(after?.evidence || "")}">${after?.verdict ?? "—"}</td>
-      <td class="small">${changed ? '<span class="text-danger">changed</span>' : ""}</td>`;
-    body.appendChild(row);
-  }
-
-  table.appendChild(body);
-  panel.appendChild(table);
-  panel.appendChild(
-    el("p", "text-muted small mt-2 mb-0", "Hover a verdict to see the evidence the AI quoted for it."),
-  );
-  return panel;
-}
-
-function badge(pass: boolean): string {
-  return pass
-    ? '<span class="badge text-bg-success">Advance</span>'
-    : '<span class="badge text-bg-danger">Reject</span>';
-}
-
-function verdictClass(verdict: string | undefined): string {
-  if (verdict === "Meets") return "verdict-meets";
-  if (verdict === "Partial") return "verdict-partial";
-  if (verdict === "No") return "verdict-no";
-  return "verdict-missing";
-}

@@ -30,7 +30,6 @@ the real deltas can be read against that noise floor.
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import logging
 import os
@@ -80,9 +79,6 @@ ATTRIBUTE_LABELS = {
     "RA": "Race / Ethnicity",
     "control": "Control (no attribute injected)",
 }
-
-#: Shortest word run the added-text diff will report as a real insertion.
-MIN_ADDED_WORDS = 4
 
 #: (baseline code, attribute code, variant index) triples that inject nothing.
 CONTROLS: set[tuple[str, str, str]] = {("BG4", "G", "4"), ("BE2", "G", "2")}
@@ -487,103 +483,7 @@ def _load_resume(path: str) -> str:
 # Side-by-side comparison — the way a reviewer actually reads this
 # ---------------------------------------------------------------------------
 
-def injected_sentences(baseline_path: str, variant_path: str) -> list[str]:
-    """The text the variant adds to its baseline.
 
-    Showing the reviewer the literal sentence that was inserted is what makes
-    the comparison self-explanatory: "this resume, plus these words, scored
-    differently" needs no statistical vocabulary at all.
-    """
-    # Word-level rather than line-level: the injected sentence is normally
-    # prepended to an existing paragraph, which rewraps every line after it, so
-    # a line-based diff reports the whole paragraph as new.
-    baseline_words = _load_resume(baseline_path).split()
-    variant_words = _load_resume(variant_path).split()
-
-    added: list[str] = []
-    matcher = difflib.SequenceMatcher(None, baseline_words, variant_words, autojunk=False)
-    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
-        if tag in ("insert", "replace"):
-            run = " ".join(variant_words[j1:j2]).strip()
-            # Runs of one or two words are line-rewrap artifacts, not the
-            # injected disclosure — reporting them as "text added" is noise.
-            # A gender variant's name and email swap is short but meaningful,
-            # so keep short runs that contain one.
-            if len(run.split()) >= MIN_ADDED_WORDS or "@" in run:
-                added.append(run)
-    return added
-
-
-def build_comparison(run: dict[str, Any]) -> dict[str, Any]:
-    """Reconstruct each pair as two scored resumes side by side.
-
-    Built from the audit's own screening rather than from data frozen into the
-    run, so a run recorded before this view existed still renders.
-    """
-    pairs = json.loads(run.get("pairs") or "[]")
-    screening_id = run.get("screening_id")
-    if not screening_id:
-        return {"qualifications": [], "comparisons": []}
-
-    quals = pipeline.label_qualifications(pipeline.load_qualifications(screening_id))
-    rows = {}
-    for row in pipeline.load_rows(screening_id):
-        for filename in row.get("source_files") or []:
-            rows[filename] = row
-
-    # Only two baselines have a control, so only their pairs can be checked
-    # against one; a movement matched by its own control is not attributable.
-    control_change = {
-        pair["baseline_code"]: pair["delta"]["coverage_delta"]
-        for pair in pairs
-        if pair.get("is_control")
-    }
-
-    comparisons = []
-    for pair in pairs:
-        baseline = rows.get(pair["baseline_file"])
-        variant = rows.get(pair["variant_file"])
-        if not baseline or not variant:
-            continue
-
-        changed = [
-            qual["id"]
-            for qual in quals
-            if (baseline["verdicts"].get(qual["id"]) or {}).get("verdict")
-            != (variant["verdicts"].get(qual["id"]) or {}).get("verdict")
-        ]
-        net = pair["delta"]["coverage_delta"]
-        control = control_change.get(pair["baseline_code"])
-
-        comparisons.append(
-            {
-                "code": pair["code"],
-                "attribute": pair["attribute"],
-                "attributeLabel": pair["attribute_label"],
-                "isControl": pair["is_control"],
-                "candidate": baseline["name"],
-                "added": _added_text(pair),
-                "baseline": _side(baseline),
-                "variant": _side(variant),
-                "changed": changed,
-                "netChange": net,
-                "advancementChanged": pair["delta"]["stage_flip"],
-                # A movement its own control reproduces says the resume is
-                # unstable, not that the disclosure did anything.
-                "matchesControl": bool(
-                    not pair["is_control"] and control is not None and control == net and net != 0
-                ),
-            }
-        )
-
-    comparisons.sort(
-        key=lambda c: (c["isControl"], -abs(c["netChange"]), -len(c["changed"]), c["candidate"])
-    )
-    return {"qualifications": quals, "comparisons": comparisons, "summary": _counts(comparisons)}
-
-
-#: Order the classes appear in, so a reader always meets the unmarked resume
-#: first and reads the rest against it.
 CLASS_ORDER = ("baseline", "gender", "race", "religion")
 
 CLASS_LABELS = {"baseline": "Unmarked", "gender": "Gender", "race": "Race / Ethnicity",
@@ -710,34 +610,66 @@ def build_grouped(run: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    return {"levels": levels}
+    return {"levels": levels, "summary": _grouped_summary(levels)}
 
 
-def _side(row: dict[str, Any]) -> dict[str, Any]:
+def _grouped_summary(levels: list[dict[str, Any]]) -> dict[str, Any]:
+    """What departed from the corpus's design, and where.
+
+    Every resume in a level satisfies the same qualifications, so a class whose
+    coverage or advancement differs from the level's stated expectation is the
+    finding. Named rather than counted: "East Asian, junior" is actionable in a
+    way that "two departures" is not.
+    """
+    coverage: list[dict[str, Any]] = []
+    advancement: list[dict[str, Any]] = []
+    groups = 0
+
+    for level in levels:
+        should_pass = level.get("expectedStage1") == "pass"
+        for group in level["classes"]:
+            groups += 1
+            label = (
+                "Unmarked"
+                if group["attribute"] == "baseline"
+                else f"{group['attributeLabel']} — {group['value']}"
+            )
+            if (
+                level.get("expectedRequired") is not None
+                and group["meanRequired"] != level["expectedRequired"]
+            ):
+                coverage.append(
+                    {
+                        "level": level["level"],
+                        "label": label,
+                        "expected": level["expectedRequired"],
+                        "actual": group["meanRequired"],
+                        "candidates": [c["name"] for c in group["candidates"]],
+                    }
+                )
+            if (should_pass and group["passed"] < group["total"]) or (
+                not should_pass and group["passed"] > 0
+            ):
+                advancement.append(
+                    {
+                        "level": level["level"],
+                        "label": label,
+                        "expected": "advance" if should_pass else "not advance",
+                        "candidates": [
+                            c["name"]
+                            for c in group["candidates"]
+                            if c["aiPass"] is not should_pass
+                        ],
+                    }
+                )
+
     return {
-        "file": (row.get("source_files") or [""])[0],
-        "name": row["name"],
-        "met": row["required_met"] + row["preferred_met"],
-        "total": row["required_total"] + row["preferred_total"],
-        "required": f"{row['required_met']}/{row['required_total']}",
-        "preferred": f"{row['preferred_met']}/{row['preferred_total']}",
-        "aiPass": bool(row["ai_pass"]),
-        # Deliberately no rank: the audit pool holds a baseline and its own
-        # variant, so a rank computed across it compares a person to themselves.
-        "verdicts": row["verdicts"],
+        "groups": groups,
+        "coverageDepartures": coverage,
+        "advancementFlips": advancement,
     }
 
 
-def _added_text(pair: dict[str, Any]) -> list[str]:
-    baseline = CORPUS_DIR / pair["baseline_file"]
-    variant = CORPUS_DIR / pair["variant_file"]
-    if not (baseline.exists() and variant.exists()):
-        return []
-    try:
-        return injected_sentences(str(baseline), str(variant))
-    except Exception as exc:  # noqa: BLE001 — a display nicety must not break the report
-        logger.warning("Could not diff %s against its baseline: %s", pair["variant_file"], exc)
-        return []
 
 
 def _counts(comparisons: list[dict[str, Any]]) -> dict[str, Any]:

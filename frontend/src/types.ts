@@ -130,50 +130,6 @@ export interface ChatTurn {
   provider: string;
 }
 
-export interface AuditSide {
-  file: string;
-  name: string;
-  met: number;
-  total: number;
-  required: string;
-  preferred: string;
-  aiPass: boolean;
-  verdicts: Record<string, VerdictEntry>;
-}
-
-export interface AuditComparison {
-  code: string;
-  attribute: string;
-  attributeLabel: string;
-  isControl: boolean;
-  candidate: string;
-  /** The literal text the variant adds to its baseline. */
-  added: string[];
-  baseline: AuditSide;
-  variant: AuditSide;
-  /** Qualification ids the two resumes were judged differently on. */
-  changed: string[];
-  netChange: number;
-  advancementChanged: boolean;
-  /** True when this resume moves by the same amount with nothing disclosed. */
-  matchesControl: boolean;
-}
-
-export interface AuditCounts {
-  comparisons: number;
-  /** identical + sameTotal + lostGround + gainedGround === comparisons */
-  identical: number;
-  sameTotal: number;
-  lostGround: number;
-  gainedGround: number;
-  advancementChanges: number;
-  judgmentsChanged: number;
-  judgmentsCompared: number;
-  controls: number;
-  controlsUnstable: number;
-  worstDrop: number;
-}
-
 export interface AuditClassCandidate {
   name: string;
   file: string;
@@ -210,6 +166,23 @@ export interface AuditLevel {
   classes: AuditClass[];
 }
 
+export interface AuditSummary {
+  groups: number;
+  coverageDepartures: {
+    level: string;
+    label: string;
+    expected: number;
+    actual: number;
+    candidates: string[];
+  }[];
+  advancementFlips: {
+    level: string;
+    label: string;
+    expected: string;
+    candidates: string[];
+  }[];
+}
+
 export interface AuditRun {
   id: string;
   provider: string;
@@ -218,8 +191,6 @@ export interface AuditRun {
   error: string;
   createdAt: string;
   corpus: string;
-  qualifications: Qualification[];
-  comparisons: AuditComparison[];
-  counts: AuditCounts;
   levels: AuditLevel[];
+  summary: AuditSummary;
 }

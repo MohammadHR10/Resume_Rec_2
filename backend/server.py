@@ -999,9 +999,7 @@ def get_audit(audit_id: str) -> dict[str, Any]:
     row = db.query_one("SELECT * FROM audit_run WHERE id=?", (audit_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Audit run not found")
-    done = row["status"] == "done"
-    comparison = audit.build_comparison(row) if done else {}
-    grouped = audit.build_grouped(row) if done else {}
+    grouped = audit.build_grouped(row) if row["status"] == "done" else {}
     return {
         "id": row["id"],
         "provider": row["provider"],
@@ -1010,10 +1008,8 @@ def get_audit(audit_id: str) -> dict[str, Any]:
         "status": row["status"],
         "error": row["error"],
         "createdAt": row["created_at"],
-        "qualifications": comparison.get("qualifications", []),
-        "comparisons": comparison.get("comparisons", []),
-        "counts": comparison.get("summary", {}),
         "levels": grouped.get("levels", []),
+        "summary": grouped.get("summary", {}),
     }
 
 
