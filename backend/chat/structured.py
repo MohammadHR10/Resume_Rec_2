@@ -145,9 +145,10 @@ You cannot run commands yourself. Every reply is one JSON object with these fiel
 Available tools:
 {tool_lines}
 
-The backend runs the tools you name and sends their JSON output back to you.
-Then you reply again — more tool calls, or a final `answer`. You have {MAX_ROUNDS}
-rounds; use them.
+Reply with **exactly one** JSON object and nothing after it — no second object,
+no trailing commentary. The backend runs the tools you name and sends their JSON
+output back to you. Then you reply again — more tool calls, or a final `answer`.
+You have {MAX_ROUNDS} rounds; use them.
 
 Ground every number in tool output or the snapshot. If you have not looked
 something up, look it up rather than guessing.
@@ -253,8 +254,24 @@ def run_turn(
     trace: list[dict[str, Any]] = []
 
     for round_index in range(MAX_ROUNDS):
-        reply = provider.chat(messages, schema=TURN_SCHEMA, model=model, system=system,
-                              schema_name="ChatTurn")
+        try:
+            reply = provider.chat(
+                messages, schema=TURN_SCHEMA, model=model, system=system, schema_name="ChatTurn"
+            )
+        except LLMError as exc:
+            # A malformed turn is recoverable: tell the model what went wrong
+            # and spend another round, rather than losing the user's question.
+            logger.warning("Chat turn %s was unusable: %s", round_index + 1, exc)
+            if round_index >= MAX_ROUNDS - 1:
+                raise
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Your last reply could not be read ({exc}). Reply with exactly "
+                    "one JSON object and nothing after it.",
+                }
+            )
+            continue
         calls = [c for c in (reply.get("tool_calls") or []) if isinstance(c, dict) and c.get("tool")]
         answer = str(reply.get("answer") or "").strip()
 

@@ -92,9 +92,35 @@ def test_parse_json_loose_handles_fences_and_preamble():
     assert base.parse_json_loose('{"a": 1}') == {"a": 1}
 
 
+def test_parse_json_loose_takes_the_first_of_two_objects():
+    """Small models emit one complete object, then start a second and run out
+    of tokens. The first one is a perfectly good answer."""
+    reply = (
+        '{"reasoning": "need evidence", "tool_calls": [{"tool": "query_candidates"}], "answer": ""}\n'
+        '{"reasoning": "We need to retrieve the detailed verdicts and ev'
+    )
+    parsed = base.parse_json_loose(reply)
+    assert parsed["reasoning"] == "need evidence"
+    assert parsed["tool_calls"][0]["tool"] == "query_candidates"
+
+
+def test_parse_json_loose_ignores_trailing_commentary():
+    assert base.parse_json_loose('{"a": 1}\n\nHope that helps!') == {"a": 1}
+
+
 def test_parse_json_loose_raises_on_garbage():
     with pytest.raises(base.LLMError):
         base.parse_json_loose("no json here at all")
+
+
+def test_an_unparseable_reply_is_not_echoed_back_to_the_user():
+    """The payload belongs in the log; a chat window full of raw JSON tells a
+    hiring reviewer nothing they can act on."""
+    payload = '{"tool_calls": [{"tool": "query_candidates", "args_json": "{\\"stage\\":1'
+    with pytest.raises(base.LLMError) as caught:
+        base.parse_json_loose(payload)
+    assert "tool_calls" not in str(caught.value)
+    assert "server log" in str(caught.value)
 
 
 # ---------------------------------------------------------------------------

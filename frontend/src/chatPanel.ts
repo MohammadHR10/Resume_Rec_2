@@ -8,6 +8,17 @@ import { askChat, getChat } from "./api.ts";
 import type { GridAction, Stage } from "./types.ts";
 import { el, escapeHtml, formatDate, notify } from "./ui.ts";
 
+const MAX_ERROR_CHARS = 300;
+
+/** Keep an error readable: one short paragraph, never a JSON dump. */
+function summarizeError(message: string): string {
+  const cleaned = (message || "Something went wrong.").trim();
+  // If a payload leaked through anyway, cut it at the first brace.
+  const brace = cleaned.indexOf("{");
+  const prose = brace > 20 ? cleaned.slice(0, brace).trim() : cleaned;
+  return prose.length > MAX_ERROR_CHARS ? `${prose.slice(0, MAX_ERROR_CHARS)}…` : prose;
+}
+
 const SUGGESTIONS = [
   "Why is the top candidate ranked above the second?",
   "Why did so many candidates make it past this stage?",
@@ -174,7 +185,10 @@ export class ChatPanel {
       this.setMode(turn.mode, turn.model);
     } catch (error) {
       thinking.remove();
-      this.append("assistant", `I could not answer that: ${(error as Error).message}`, "error");
+      // Belt and braces: the backend now sends a written explanation rather
+      // than a raw payload, but a chat window must never become a dump of
+      // whatever a model happened to emit.
+      this.append("assistant", summarizeError((error as Error).message), "error");
     } finally {
       this.sendButton.disabled = false;
       this.log.scrollTop = this.log.scrollHeight;

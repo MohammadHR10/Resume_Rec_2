@@ -12,6 +12,7 @@ import pytest
 from backend import db
 from backend.chat import session as chat_session
 from backend.chat import structured, workspace
+from backend.llm.base import LLMError
 
 
 @pytest.fixture
@@ -314,6 +315,35 @@ def test_structured_loop_reports_an_unknown_tool_instead_of_crashing(ws):
     result = structured.run_turn(provider, "m", ws, "brief", [], "drop the database")
     assert result["answer"] == "I cannot do that."
     assert "unknown tool" in provider.seen[1][-1]["content"]
+
+
+def test_structured_loop_recovers_from_one_unreadable_turn(ws):
+    """A malformed turn costs a round, not the user's question."""
+
+    class FlakyProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, *, schema=None, model=None, system=None, schema_name="Response"):
+            self.calls += 1
+            self.last = messages
+            if self.calls == 1:
+                raise LLMError("the model's reply was not valid JSON")
+            return {"tool_calls": [], "answer": "Recovered."}
+
+    provider = FlakyProvider()
+    result = structured.run_turn(provider, "m", ws, "brief", [], "why did 3 fail?")
+    assert result["answer"] == "Recovered."
+    assert "could not be read" in provider.last[-1]["content"]
+
+
+def test_structured_loop_gives_up_cleanly_when_every_turn_is_unreadable(ws):
+    class BrokenProvider:
+        def chat(self, *_args, **_kwargs):
+            raise LLMError("the model's reply was not valid JSON")
+
+    with pytest.raises(LLMError):
+        structured.run_turn(BrokenProvider(), "m", ws, "brief", [], "why did 3 fail?")
 
 
 def test_structured_loop_nudges_a_model_that_says_nothing(ws):

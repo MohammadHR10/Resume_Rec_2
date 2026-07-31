@@ -87,24 +87,42 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def parse_json_loose(text: str) -> dict[str, Any]:
-    """Pull a JSON object out of a model reply that may not be pure JSON.
+    """Pull the first complete JSON object out of a model reply.
 
     Models without strict structured-output support wrap their answer in code
-    fences or a sentence of preamble. Try the whole string, then a fenced
-    block, then the outermost balanced ``{...}``.
+    fences, add a sentence of preamble, keep talking after the closing brace,
+    or emit a second object and run out of tokens partway through it. All of
+    those still contain one usable object, and taking the *first complete* one
+    is what recovers it — scanning to the last ``}`` instead spans two objects
+    and fails on a reply that was perfectly answerable.
     """
     text = (text or "").strip()
     if not text:
-        raise LLMError("model returned an empty response")
+        raise LLMError("the model returned an empty response")
 
     for candidate in _json_candidates(text):
-        try:
-            parsed = json.loads(candidate)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
+        parsed = _first_json_object(candidate)
+        if parsed is not None:
             return parsed
-    raise LLMError(f"could not parse JSON from model response: {text[:300]}")
+
+    # The payload goes to the log, not to the user: a wall of raw JSON in a
+    # chat window tells a hiring reviewer nothing they can act on.
+    logger.warning("Unparseable model response: %s", text[:2000])
+    raise LLMError(
+        "the model's reply was not valid JSON (the full reply is in the server log)"
+    )
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """Decode the first ``{...}`` value, ignoring whatever follows it."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text, start)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _json_candidates(text: str) -> list[str]:
@@ -112,10 +130,6 @@ def _json_candidates(text: str) -> list[str]:
     fenced = _FENCE_RE.search(text)
     if fenced:
         candidates.append(fenced.group(1).strip())
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(text[start : end + 1])
     return candidates
 
 
