@@ -29,7 +29,7 @@ COPY --from=frontend-build /app/dist ./dist
 RUN mkdir -p /app/data
 ENV SCREENING_DB=/app/data/screening.db \
     CHAT_WORKSPACE_ROOT=/app/data/chat \
-    AUDIT_CORPUS_DIR=/app/test-resumes/SWE_pdf \
+    AUDIT_CORPUS_DIR=/app/test-resumes/swe_ii_corpus \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000
