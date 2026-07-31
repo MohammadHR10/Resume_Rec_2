@@ -145,10 +145,7 @@ def ask(session_id: str, question: str) -> dict[str, Any]:
                 provider, model, path, brief, _history(session_id)[:-1], question
             )
         except LLMError as exc:
-            message = (
-                f"I couldn't answer that — {exc}. Try asking again, or narrow the question "
-                f"to fewer candidates."
-            )
+            message = f"I couldn't answer that — {exc}. Try asking again."
             _record(session_id, "assistant", message, "error", model)
             raise LLMError(message) from exc
         answer = outcome["answer"]

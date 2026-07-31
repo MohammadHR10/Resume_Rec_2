@@ -413,10 +413,25 @@ class OpenAICompatibleProvider(LLMProvider):
                 # A reply cut off at the token limit is not a malformed reply,
                 # and saying so is the difference between an actionable error
                 # and "could not parse JSON from model response: {"tool_ca…".
+                usage = data.get("usage") or {}
+                # Reasoning models spend completion tokens on thinking that
+                # never reaches `content`, so the visible reply is a fraction
+                # of the budget consumed. Logging both is the only way to tell
+                # a real budget problem from a verbose one without a probe.
+                logger.info(
+                    "%s/%s tokens: prompt=%s completion=%s (visible %d chars) finish=%s",
+                    self.name,
+                    body.get("model"),
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                    len(content or ""),
+                    choice.get("finish_reason"),
+                )
                 if choice.get("finish_reason") == "length":
                     raise LLMError(
-                        f"{self.label}: the model's reply was cut off at the {self.max_tokens}-token "
-                        "limit. Raise LLM_MAX_TOKENS, or ask a narrower question."
+                        f"{self.label}: the model's reply was cut off after "
+                        f"{usage.get('completion_tokens', self.max_tokens)} tokens, at the "
+                        f"{self.max_tokens}-token output limit. Raise LLM_MAX_TOKENS."
                     )
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 last_error = f"malformed response: {exc}"
