@@ -156,6 +156,49 @@ export const askChat = (id: string, stage: Stage, question: string) =>
 export const chatActions = (sessionId: string, since: number) =>
   request<{ actions: GridAction[] }>(`/api/chat/${sessionId}/actions?since=${since}`);
 
+/** Watch a chat session's action queue and apply what it emits.
+ *
+ * Grid actions travel through the backend rather than in the chat response, so
+ * a question asked in a popped-out window still sorts and filters the grid in
+ * the main one. Returns a stop function.
+ */
+export function followGridActions(
+  sessionId: string,
+  onAction: (action: GridAction) => void,
+  intervalMs = 2000,
+): () => void {
+  let since = 0;
+  let stopped = false;
+
+  // Start past whatever is already queued: those were applied when they were
+  // answered, and replaying them would fight the user's own sorting.
+  void chatActions(sessionId, 0)
+    .then((data) => {
+      since = data.actions.reduce((max, action) => Math.max(max, action.id), 0);
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      const tick = async () => {
+        if (stopped) return;
+        try {
+          const data = await chatActions(sessionId, since);
+          for (const action of data.actions) {
+            since = Math.max(since, action.id);
+            onAction(action);
+          }
+        } catch {
+          /* a hiccup should not end the watch */
+        }
+        if (!stopped) window.setTimeout(tick, intervalMs);
+      };
+      void tick();
+    });
+
+  return () => {
+    stopped = true;
+  };
+}
+
 // -- bias audit -------------------------------------------------------------
 
 export interface Corpus {

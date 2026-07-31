@@ -54,17 +54,24 @@ export class ChatPanel {
   private readonly screeningId: string;
   private readonly stage: Stage;
   private readonly onGridAction: (action: GridAction) => void;
+  /** Told when the user collapses or pops the panel out. */
+  private readonly onCollapse?: (collapsed: boolean) => void;
+  /** True in the pop-out window, where collapsing and popping out again make no sense. */
+  private readonly standalone: boolean;
 
   constructor(
     root: HTMLElement,
     screeningId: string,
     stage: Stage,
     onGridAction: (action: GridAction) => void,
+    options: { onCollapse?: (collapsed: boolean) => void; standalone?: boolean } = {},
   ) {
     this.root = root;
     this.screeningId = screeningId;
     this.stage = stage;
     this.onGridAction = onGridAction;
+    this.onCollapse = options.onCollapse;
+    this.standalone = options.standalone ?? false;
     this.build();
   }
 
@@ -72,10 +79,31 @@ export class ChatPanel {
     this.root.innerHTML = "";
     const card = el("div", "card h-100");
 
-    const header = el("div", "card-header d-flex justify-content-between align-items-center");
-    header.appendChild(el("span", "fw-semibold", "Ask about this stage"));
+    const header = el("div", "card-header d-flex justify-content-between align-items-center gap-2");
+    header.appendChild(el("span", "fw-semibold me-auto", "Ask about this stage"));
     this.modeBadge = el("span", "badge text-bg-light border", "…");
     header.appendChild(this.modeBadge);
+
+    // A separate window keeps the chat visible on a second monitor while the
+    // grid takes the whole page. Grid actions still arrive: they travel
+    // through the backend's action queue, which the grid polls regardless of
+    // which window asked the question.
+    const popOut = el("button", "btn btn-sm btn-outline-secondary border-0", "⧉") as HTMLButtonElement;
+    popOut.title = "Open the chat in its own window";
+    popOut.addEventListener("click", () => {
+      window.open(
+        `${location.pathname}?popout=1#/chat/${this.screeningId}/${this.stage}`,
+        `chat-${this.screeningId}-${this.stage}`,
+        "width=520,height=760,menubar=no,toolbar=no",
+      );
+      this.onCollapse?.(true);
+    });
+
+    const collapse = el("button", "btn btn-sm btn-outline-secondary border-0", "→") as HTMLButtonElement;
+    collapse.title = "Collapse the chat and give the grid the full width";
+    collapse.addEventListener("click", () => this.onCollapse?.(true));
+
+    if (!this.standalone) header.append(popOut, collapse);
     card.appendChild(header);
 
     this.log = el("div", "card-body chat-log");
@@ -113,7 +141,9 @@ export class ChatPanel {
     this.root.appendChild(card);
   }
 
-  async load(): Promise<void> {
+  /** Loads the transcript; returns the session id so the caller can follow its
+   *  action queue even when the chat lives in another window. */
+  async load(): Promise<string | null> {
     try {
       const payload = await getChat(this.screeningId, this.stage);
       this.setMode(payload.mode, payload.model);
@@ -130,18 +160,19 @@ export class ChatPanel {
       for (const message of payload.messages) {
         this.append(message.role, message.content, message.mode, message.created_at);
       }
+      return payload.sessionId;
     } catch (error) {
       notify(`Could not open the chat: ${(error as Error).message}`, "danger");
+      return null;
     }
   }
 
   private setMode(mode: string, model: string): void {
-    const label = mode === "harness" ? "harness" : "structured";
-    this.modeBadge.textContent = `${label} · ${model || "no model"}`;
+    this.modeBadge.textContent = `${mode === "harness" ? "Independent" : "Guided"} · ${model || "no model"}`;
     this.modeBadge.title =
       mode === "harness"
-        ? "A CLI harness drives the analysis tools directly."
-        : "The backend runs the analysis tools on the model's behalf.";
+        ? "Independent — the assistant explores the screening data itself."
+        : "Guided — the app runs a fixed set of analyses on the assistant's behalf.";
   }
 
   private append(role: string, content: string, mode = "", timestamp = ""): HTMLElement {
@@ -187,7 +218,7 @@ export class ChatPanel {
           el(
             "div",
             "chat-note text-warning-emphasis",
-            `Harness unavailable, answered with the structured loop instead (${escapeHtml(
+            `Independent mode was unavailable, so this was answered in Guided mode (${escapeHtml(
               turn.degradedFrom,
             )}).`,
           ),

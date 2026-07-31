@@ -325,18 +325,43 @@ function chatCard(config: AppConfig): HTMLElement {
     el(
       "p",
       "text-muted small",
-      "Harness mode gives a CLI agent the analysis tools directly. Structured mode runs the same tools from the backend on the model's behalf — the fallback for models that cannot drive a CLI. A failed harness turn degrades to structured automatically.",
+      "How the assistant answers questions about a screening. Both modes reach the same information and can sort and filter the grid — the difference is who decides what to look at.",
     ),
   );
 
+  // "harness" and "structured" describe the plumbing. These describe what a
+  // reviewer gets, which is what they are choosing between.
+  const MODES: { value: string; label: string; help: string }[] = [
+    {
+      value: "structured",
+      label: "Guided — the app runs a fixed set of analyses",
+      help: "The assistant picks from a set list of questions the app knows how to answer: compare two candidates, summarise a stage, recalculate without a qualification. Predictable, and works with every model.",
+    },
+    {
+      value: "harness",
+      label: "Independent — the assistant explores the data itself",
+      help: "The assistant works directly with a copy of the screening and decides what to examine, so it can follow up on its own findings. Needs a capable model and the agent tooling installed; if either is missing it falls back to Guided for that question and tells you.",
+    },
+  ];
+
   const modeSelect = el("select", "form-select") as HTMLSelectElement;
-  for (const mode of ["harness", "structured"]) {
-    const option = el("option", "", mode) as HTMLOptionElement;
-    option.value = mode;
-    option.selected = mode === config.chatMode;
+  for (const mode of MODES) {
+    const option = el("option", "", escapeHtml(mode.label)) as HTMLOptionElement;
+    option.value = mode.value;
+    option.selected = mode.value === config.chatMode;
     modeSelect.appendChild(option);
   }
-  body.appendChild(labelled(`Mode for ${config.provider} / ${config.model || "(no model)"}`, modeSelect));
+  body.appendChild(
+    labelled(`Mode for ${config.provider} / ${config.model || "(no model)"}`, modeSelect),
+  );
+
+  const modeHelp = el("div", "form-text mb-3");
+  const describeMode = () => {
+    modeHelp.textContent = MODES.find((m) => m.value === modeSelect.value)?.help ?? "";
+  };
+  modeSelect.addEventListener("change", describeMode);
+  describeMode();
+  body.appendChild(modeHelp);
 
   const cliSelect = el("select", "form-select") as HTMLSelectElement;
   for (const adapter of config.adapters) {

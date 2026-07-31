@@ -220,6 +220,20 @@ body {
   font-size: 0.75rem;
 }
 
+/* When the chat is collapsed it becomes a tab on the right edge, so the way
+   back is always visible without taking a column. */
+.chat-reopen {
+  position: fixed;
+  right: 0;
+  top: 45%;
+  z-index: 1020;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  writing-mode: vertical-rl;
+  padding: 0.75rem 0.35rem;
+  background-color: var(--bs-body-bg);
+}
+
 /* Progress log -------------------------------------------------------------- */
 
 .progress-log {

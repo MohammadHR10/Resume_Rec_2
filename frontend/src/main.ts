@@ -7,6 +7,8 @@ import {
   auditTrail,
   createScreening,
   deleteScreening,
+  followGridActions,
+  getConfig,
   getScreening,
   listScreenings,
   startEvaluation,
@@ -57,8 +59,26 @@ function route(): void {
 
   if (section === "config") return void renderConfigPage(view());
   if (section === "audit") return void renderAuditPage(view());
+  if (section === "chat" && id) return void renderChatWindow(view(), id, hash.split("/")[2]);
   if (section === "screening" && id) return void renderScreening(view(), id);
   return void renderScreeningList(view());
+}
+
+/** The chat on its own, for the popped-out window.
+ *
+ * Grid actions it queues are picked up by the main window through the same
+ * action queue, so asking here still sorts the grid over there.
+ */
+async function renderChatWindow(root: HTMLElement, screeningId: string, stage: string): Promise<void> {
+  document.querySelector("nav")?.classList.add("d-none");
+  root.className = "vh-100 d-flex flex-column";
+  const host = el("div", "flex-grow-1 overflow-hidden");
+  root.appendChild(host);
+
+  const panel = new ChatPanel(host, screeningId, (stage || "1") as Stage, () => undefined, {
+    standalone: true,
+  });
+  await panel.load();
 }
 
 window.addEventListener("hashchange", route);
@@ -269,7 +289,26 @@ function uploadSection(screeningId: string, detail: ScreeningDetail) {
     "text-muted small",
     `${Object.values(detail.stageCounts).reduce((sum, n) => sum + n, 0)} candidate(s) loaded`,
   );
-  buttons.append(upload, evaluate, counter);
+
+  // Which model is about to read these resumes, stated where the decision is
+  // made rather than only on the Configuration page.
+  const modelNote = el("span", "small ms-auto");
+  modelNote.innerHTML = '<span class="text-muted">checking model…</span>';
+  void getConfig()
+    .then((config) => {
+      modelNote.innerHTML = config.model
+        ? `<span class="text-muted">Will evaluate with</span>
+           <strong>${escapeHtml(config.model)}</strong>
+           <span class="text-muted">via ${escapeHtml(config.provider)}</span>
+           <a href="#/config" class="ms-2">change</a>`
+        : `<span class="text-warning-emphasis">No model selected</span>
+           <a href="#/config" class="ms-2">choose one</a>`;
+    })
+    .catch(() => {
+      modelNote.innerHTML = '<span class="text-muted">model unknown</span>';
+    });
+
+  buttons.append(upload, evaluate, counter, modelNote);
   body.appendChild(buttons);
 
   const progress = el("div", "mt-3 d-none");
@@ -357,6 +396,22 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
   const chatColumn = el("div", "col-xl-4");
   layout.append(gridColumn, chatColumn);
 
+  // Collapsed, the chat becomes a tab on the right edge and the grid takes the
+  // full width. The state is remembered, because a reviewer who wants the room
+  // wants it on every stage and every visit.
+  const COLLAPSE_KEY = "chat-collapsed";
+  const reopen = el("button", "btn btn-sm btn-outline-primary chat-reopen d-none", "💬 Chat");
+  reopen.title = "Show the chat panel";
+
+  function setChatCollapsed(collapsed: boolean): void {
+    localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+    chatColumn.classList.toggle("d-none", collapsed);
+    gridColumn.classList.toggle("col-xl-8", !collapsed);
+    gridColumn.classList.toggle("col-12", collapsed);
+    reopen.classList.toggle("d-none", !collapsed);
+  }
+  reopen.addEventListener("click", () => setChatCollapsed(false));
+
   const gridHost = el("div");
   const evidenceHost = el("div", "mt-3");
   evidenceHost.id = "evidence-panel";
@@ -368,6 +423,7 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
   let grid: StageGrid | null = null;
   let chat: ChatPanel | null = null;
   let current: Stage = "1";
+  let stopPolling: (() => void) | undefined;
 
   function paintCounts(next: Record<string, number>): void {
     Object.assign(counts, next);
@@ -387,8 +443,15 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
     grid = new StageGrid(gridHost, screeningId, stage, paintCounts);
     await grid.refresh();
 
-    chat = new ChatPanel(chatHost, screeningId, stage, (action) => grid?.applyGridAction(action));
-    await chat.load();
+    chat = new ChatPanel(chatHost, screeningId, stage, (action) => grid?.applyGridAction(action), {
+      onCollapse: setChatCollapsed,
+    });
+    const session = await chat.load();
+
+    // Poll the action queue so a question asked in the pop-out window still
+    // sorts and filters this grid.
+    stopPolling?.();
+    stopPolling = session ? followGridActions(session, (a) => grid?.applyGridAction(a)) : undefined;
   }
 
   for (const stage of STAGES) {
@@ -404,7 +467,8 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
     tabs.appendChild(item);
   }
 
-  body.append(tabs, layout);
+  body.append(tabs, layout, reopen);
+  setChatCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
 
   const trail = el("div", "mt-4");
   body.appendChild(trail);

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from backend import db, server
 from backend.llm import registry
 
-CORPUS = Path(__file__).resolve().parent.parent / "test-resumes" / "SWE_pdf"
+CORPUS = Path(__file__).resolve().parent.parent / "test-resumes" / "swe_ii_corpus"
 
 JD_TEXT = """\
 Software Engineer II
@@ -405,12 +405,12 @@ def test_evaluation_requires_at_least_one_resume(client, stub):
 def test_resume_upload_extracts_text_from_pdfs(client, stub):
     screening_id = _seed_screening(client)
     payload = _upload_resumes(
-        client, screening_id, ["Resume_1_Ayaan_Rahman.pdf", "Resume_2_Jordan_Lee.pdf"]
+        client, screening_id, ["Jordan_Avery_senior.pdf", "Casey_Sloan_senior.pdf"]
     ).json()
     assert payload["added"] == 2
     assert payload["skipped"] == []
     rows = db.query("SELECT name, resume_text FROM candidate WHERE screening_id=?", (screening_id,))
-    assert {r["name"] for r in rows} == {"Ayaan Rahman", "Jordan Lee"}
+    assert {r["name"] for r in rows} == {"Jordan Avery senior", "Casey Sloan senior"}
     assert all(len(r["resume_text"]) > 100 for r in rows)
 
 
@@ -418,7 +418,7 @@ def test_a_zip_upload_is_flattened_into_its_pdfs(client, stub):
     screening_id = _seed_screening(client)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        for name in ["Resume_1_Ayaan_Rahman.pdf", "Resume_3_Rohan_Mehta.pdf"]:
+        for name in ["Jordan_Avery_senior.pdf", "Riley_Brennan_senior.pdf"]:
             archive.writestr(f"batch/{name}", (CORPUS / name).read_bytes())
     response = client.post(
         f"/api/screenings/{screening_id}/candidates",
@@ -432,7 +432,7 @@ def test_full_funnel_evaluate_promote_and_export(client, stub):
     _upload_resumes(
         client,
         screening_id,
-        ["Resume_1_Ayaan_Rahman.pdf", "Resume_2_Jordan_Lee.pdf", "Resume_3_Rohan_Mehta.pdf"],
+        ["Jordan_Avery_senior.pdf", "Casey_Sloan_senior.pdf", "Riley_Brennan_senior.pdf"],
     )
 
     started = client.post(f"/api/screenings/{screening_id}/evaluate").json()
@@ -487,7 +487,7 @@ def test_promoting_a_candidate_the_model_failed_is_recorded_as_an_override(clien
     provider = StubProvider(verdict="No")
     monkeypatch.setattr(server.registry, "active", lambda: (provider, "ulproxy", "stub-model"))
     screening_id = _seed_screening(client)
-    _upload_resumes(client, screening_id, ["Resume_1_Ayaan_Rahman.pdf"])
+    _upload_resumes(client, screening_id, ["Jordan_Avery_senior.pdf"])
     started = client.post(f"/api/screenings/{screening_id}/evaluate").json()
     _wait_for_job(client, started["jobId"])
 
@@ -503,7 +503,7 @@ def test_promoting_a_candidate_the_model_failed_is_recorded_as_an_override(clien
 
 def test_editing_the_checklist_after_evaluating_clears_stale_verdicts(client, stub):
     screening_id = _seed_screening(client)
-    _upload_resumes(client, screening_id, ["Resume_1_Ayaan_Rahman.pdf"])
+    _upload_resumes(client, screening_id, ["Jordan_Avery_senior.pdf"])
     _wait_for_job(client, client.post(f"/api/screenings/{screening_id}/evaluate").json()["jobId"])
     assert db.query_one("SELECT COUNT(*) AS n FROM evaluation")["n"] == 1
 
@@ -520,7 +520,7 @@ def test_editing_the_checklist_after_evaluating_clears_stale_verdicts(client, st
 
 def test_structured_chat_runs_a_real_tool_and_answers(client, stub):
     screening_id = _seed_screening(client)
-    _upload_resumes(client, screening_id, ["Resume_1_Ayaan_Rahman.pdf", "Resume_2_Jordan_Lee.pdf"])
+    _upload_resumes(client, screening_id, ["Jordan_Avery_senior.pdf", "Casey_Sloan_senior.pdf"])
     _wait_for_job(client, client.post(f"/api/screenings/{screening_id}/evaluate").json()["jobId"])
 
     opened = client.get(f"/api/screenings/{screening_id}/chat/1").json()
@@ -551,15 +551,13 @@ def test_chat_rejects_an_empty_question(client, stub):
 
 def test_corpus_endpoint_lists_every_corpus(client):
     corpora = {c["name"]: c for c in client.get("/api/audits/corpus").json()["corpora"]}
-    assert {"swe_ii_corpus", "SWE_pdf"} <= set(corpora)
+    assert "swe_ii_corpus" in corpora
 
-    old = corpora["SWE_pdf"]
-    assert old["files"] == 34 and old["pairs"] == 24
-    assert {a["attribute"] for a in old["byAttribute"]} == {"G", "R", "RA", "control"}
-
-    new = corpora["swe_ii_corpus"]
-    assert new["isDefault"] is True
-    assert new["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+    entry = corpora["swe_ii_corpus"]
+    assert entry["isDefault"] is True
+    assert entry["files"] == 48 and entry["pairs"] == 36
+    assert entry["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+    assert {a["attribute"] for a in entry["byAttribute"]} == {"gender", "race", "religion"}
 
 
 def test_a_screening_can_be_built_from_a_corpus_without_any_upload(client, stub):
@@ -616,7 +614,7 @@ def test_an_audit_can_name_its_own_model(client, stub, monkeypatch):
     response = client.post(
         "/api/audits",
         json={"screeningId": screening_id, "provider": "ulproxy", "model": "gpt-5.4-mini",
-              "corpus": "SWE_pdf"},
+              "corpus": "swe_ii_corpus"},
     )
     assert response.status_code == 200
     assert response.json()["model"] == "gpt-5.4-mini"
@@ -632,7 +630,7 @@ def test_an_audit_falls_back_to_the_active_model(client, stub, monkeypatch):
     monkeypatch.setattr(server.audit, "run_audit", noop)
     screening_id = _seed_screening(client)
     response = client.post(
-        "/api/audits", json={"screeningId": screening_id, "corpus": "SWE_pdf"}
+        "/api/audits", json={"screeningId": screening_id, "corpus": "swe_ii_corpus"}
     )
     assert response.json()["model"] == "stub-model"
 
@@ -677,7 +675,7 @@ def test_an_audit_rejects_an_unknown_provider(client, stub):
     screening_id = _seed_screening(client)
     response = client.post(
         "/api/audits",
-        json={"screeningId": screening_id, "provider": "nope", "model": "x", "corpus": "SWE_pdf"},
+        json={"screeningId": screening_id, "provider": "nope", "model": "x", "corpus": "swe_ii_corpus"},
     )
     assert response.status_code == 400
 

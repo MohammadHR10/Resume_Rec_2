@@ -1,30 +1,15 @@
-"""Bias audit: pair corpus variants with their baselines and measure the delta.
+"""Bias audit: score a corpus and read each class against its experience level.
 
-The corpus in ``test-resumes/SWE_pdf/`` is 10 baseline resumes plus 24 variants.
-Each variant is byte-identical to its baseline except for one injected sentence
-disclosing a protected characteristic (and a construction marker on the name
-line, which is stripped — see ``strip_code_marker``). So any difference in the
-screening outcome between a baseline and its variant is attributable to that
-one sentence, which is the whole point of the exercise.
+A corpus is a directory under ``test-resumes/`` holding resumes, the position
+description they were written against, and a ``corpus.json`` manifest naming
+every resume's experience level and protected-class attributes, plus the
+baseline each variant came from.
 
-Filename convention, decoded from the PDFs themselves and confirmed with the
-repo owner:
-
-    Resume_31_(BG1_R1)Ayaan_Rahman.pdf
-                ^^^  ^^
-                 |    +-- attribute code + index: G gender, R religion,
-                 |        RA race/ethnicity & national origin
-                 +------- which baseline this varies
-
-Baseline codes are BG1-BG4 (mid-level), BS1-BS2 (senior/staff) and BE1-BE2
-(entry-level/recent graduate); the mapping from code to baseline file is a fact
-about how the corpus was built, not something derivable, so it is written down
-in ``BASELINE_RESUME_NUMBER``.
-
-Two variants inject nothing meaningful (BG4/G4 rewords a heading, BE2/G2 changes
-only the marker). They are negative controls: whatever they move is the model's
-own nondeterminism, and they are reported separately from the real attributes so
-the real deltas can be read against that noise floor.
+The manifest is what makes the audit readable. Every resume at a level makes
+identical qualification claims, so the level has a known-correct score and
+should come out as one block; any spread between classes is the model reading
+the same claims differently depending on the name attached to them. See
+``tools/build_corpus.py`` for how the corpus is generated.
 """
 
 from __future__ import annotations
@@ -61,68 +46,21 @@ CORPUS_DIR = Path(os.getenv("AUDIT_CORPUS_DIR", CORPUS_ROOT / "swe_ii_corpus"))
 #: screened against. The latter is not a candidate.
 NON_RESUME_PREFIXES = ("position-description",)
 
-#: Which numbered baseline resume each baseline code refers to.
-BASELINE_RESUME_NUMBER: dict[str, int] = {
-    "BG1": 1,  # Ayaan Rahman — mid-level
-    "BG2": 2,  # Jordan Lee — mid-level
-    "BG3": 3,  # Rohan Mehta — mid-level
-    "BS1": 4,  # Zayan K. Rahman — staff
-    "BS2": 5,  # Kiran A. Vance — senior
-    "BG4": 6,  # Casey J. Morgan — mid-level
-    "BE1": 7,  # Alex J. Rivera — entry level
-    "BE2": 8,  # Martin Reed — entry level
-}
 
-ATTRIBUTE_LABELS = {
-    "G": "Gender",
-    "R": "Religion",
-    "RA": "Race / Ethnicity",
-    "control": "Control (no attribute injected)",
-}
 
-#: (baseline code, attribute code, variant index) triples that inject nothing.
-CONTROLS: set[tuple[str, str, str]] = {("BG4", "G", "4"), ("BE2", "G", "2")}
 
-_CODE_RE = re.compile(r"\(\s*(B[GSE]\d)\s*[_\-]\s*(RA|R|G)(\d)\s*\)+", re.IGNORECASE)
-_BASELINE_NUMBER_RE = re.compile(r"resume[_\- ]*(\d+)", re.IGNORECASE)
 
 # The construction marker the corpus author left on each variant's name line,
 # e.g. "Ayaan Rahman ◆ BG1/R1". Present on every variant and no baseline, so
 # leaving it in would add one identical artifact to every variant and muddy the
 # very delta the audit exists to measure.
-_MARKER_RE = re.compile(r"[^\S\n]*[^\w\s]?[^\S\n]*\bB[GSE]\d\s*/\s*(?:RA|R|G)\d\b", re.IGNORECASE)
 
-
-def strip_code_marker(text: str) -> str:
-    return _MARKER_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
 # Pairing
 # ---------------------------------------------------------------------------
 
-def parse_variant(filename: str) -> dict[str, str] | None:
-    """Decode a variant filename, or None when it is a baseline."""
-    match = _CODE_RE.search(os.path.basename(filename))
-    if not match:
-        return None
-    baseline_code = match.group(1).upper()
-    attribute = match.group(2).upper()
-    index = match.group(3)
-    is_control = (baseline_code, attribute, index) in CONTROLS
-    return {
-        "baseline_code": baseline_code,
-        "attribute": "control" if is_control else attribute,
-        "raw_attribute": attribute,
-        "index": index,
-        "is_control": is_control,
-        "code": f"{baseline_code}_{attribute}{index}",
-    }
-
-
-def baseline_number(filename: str) -> int | None:
-    match = _BASELINE_NUMBER_RE.search(os.path.basename(filename))
-    return int(match.group(1)) if match else None
 
 
 def list_corpus(corpus_dir: Path | None = None) -> list[str]:
@@ -135,11 +73,16 @@ def list_corpus(corpus_dir: Path | None = None) -> list[str]:
 
 
 def load_pairs(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    """Pairings for a corpus, from its manifest if it has one."""
+    """Pairings a corpus declares in its own corpus.json.
+
+    A corpus without a manifest has no pairs, and the audit refuses to run over
+    it rather than guessing pairings from filenames — that guessing existed for
+    one hand-built corpus which no longer exists.
+    """
     declared = pairs_from_manifest(corpus_dir)
     if declared is not None:
         return declared
-    return build_pairs(list_corpus(corpus_dir))
+    return [], list_corpus(corpus_dir), []
 
 
 def resolve_corpus(name: str | None) -> Path:
@@ -195,7 +138,7 @@ def describe_corpora() -> list[dict[str, Any]]:
                 "positionDescription": description,
                 "skillLevels": levels,
                 "byAttribute": [
-                    {"attribute": attribute, "label": ATTRIBUTE_LABELS.get(attribute, label), "pairs": count}
+                    {"attribute": attribute, "label": label, "pairs": count}
                     for (attribute, label), count in sorted(by_attribute.items())
                 ],
                 "unpaired": [os.path.basename(p) for p in unpaired],
@@ -263,55 +206,6 @@ def pairs_from_manifest(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[st
     pairs.sort(key=lambda p: (p["attribute_label"], p["baseline_code"]))
     return pairs, baselines, unpaired
 
-
-def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    """Split the corpus into (pairs, baseline paths, unpaired variant paths).
-
-    A variant whose baseline code is unknown, or whose baseline file is absent,
-    is returned as unpaired rather than silently dropped — a corpus that grew a
-    file the map does not know about should be visible, not invisible.
-    """
-    baselines: dict[int, str] = {}
-    baseline_paths: list[str] = []
-    variants: list[tuple[str, dict[str, str]]] = []
-
-    for path in paths:
-        info = parse_variant(path)
-        if info:
-            variants.append((path, info))
-            continue
-        # Every non-variant file is a baseline. Only those carrying a
-        # ``Resume_<n>`` number can be *paired*, since that number is what the
-        # variant filenames refer back to — a corpus named some other way is
-        # still a corpus, it just has nothing to pair yet.
-        baseline_paths.append(path)
-        number = baseline_number(path)
-        if number is not None:
-            baselines[number] = path
-
-    pairs: list[dict[str, Any]] = []
-    unpaired: list[str] = []
-    for path, info in variants:
-        number = BASELINE_RESUME_NUMBER.get(info["baseline_code"])
-        baseline_path = baselines.get(number) if number else None
-        if not baseline_path:
-            unpaired.append(path)
-            continue
-        pairs.append(
-            {
-                "code": info["code"],
-                "baseline_code": info["baseline_code"],
-                "attribute": info["attribute"],
-                "is_control": info["is_control"],
-                "baseline_path": baseline_path,
-                "variant_path": path,
-                "baseline_file": os.path.basename(baseline_path),
-                "variant_file": os.path.basename(path),
-            }
-        )
-
-    pairs.sort(key=lambda p: (p["attribute"], p["baseline_code"]))
-    return pairs, sorted(baseline_paths), unpaired
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +287,7 @@ def summarize(pairs: list[dict[str, Any]], thresholds: dict[str, Any]) -> dict[s
             pair["attribute"],
             {
                 "attribute": pair["attribute"],
-                "label": ATTRIBUTE_LABELS.get(pair["attribute"], pair["attribute"]),
+                "label": pair.get("attribute_label") or pair["attribute"],
                 "pairs": 0,
                 "verdict_flips": 0,
                 "verdicts_compared": 0,
@@ -476,7 +370,7 @@ def _load_resume(path: str) -> str:
     # .strip() matters: a control variant can be byte-identical to its baseline
     # apart from leading whitespace, and feeding the model two different strings
     # produces two different answers for no reason anyone would call bias.
-    return strip_code_marker(extract_text_from_pdf(path)).strip()
+    return extract_text_from_pdf(path).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +754,6 @@ async def run_audit(
             )
             pair["baseline_name"] = baseline["name"]
             pair["variant_name"] = variant["name"]
-            pair["attribute_label"] = ATTRIBUTE_LABELS.get(pair["attribute"], pair["attribute"])
             pair.pop("baseline_path", None)
             pair.pop("variant_path", None)
 
