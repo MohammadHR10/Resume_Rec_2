@@ -245,6 +245,88 @@ def test_parse_jd_produces_two_editable_lists(client, stub):
     assert labels == ["R1", "R2", "P1"]
 
 
+JD_DOCX = (
+    Path(__file__).resolve().parent.parent
+    / "test-resumes"
+    / "2025 JD - University Lands - Machine Learning & LLM Integration Intern.docx"
+)
+
+
+def test_parse_jd_reads_a_word_document(client, stub):
+    """HR sends position descriptions as .docx; feeding those bytes to a UTF-8
+    decode produced mojibake and an empty checklist that looked like success."""
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": (JD_DOCX.name, JD_DOCX.read_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["qualifications"]) == 3
+
+    stored = db.query_one("SELECT jd_text FROM screening WHERE id=?", (screening_id,))["jd_text"]
+    assert "Proficiency in Python" in stored
+    assert "�" not in stored
+
+
+def test_parse_jd_rejects_an_unsupported_file_type(client, stub):
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": ("jd.rtf", b"{\\rtf1\\ansi some text}", "application/rtf")},
+    )
+    assert response.status_code == 400
+    assert ".pdf" in response.json()["detail"]
+
+
+def test_parse_jd_tells_a_doc_user_what_to_do(client, stub):
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": ("jd.doc", b"\xd0\xcf\x11\xe0legacy word", "application/msword")},
+    )
+    assert response.status_code == 400
+    assert "Save the .doc as .docx" in response.json()["detail"]
+
+
+def test_parse_jd_rejects_binary_masquerading_as_text(client, stub):
+    """A file whose extension lies should be refused, not handed to the model."""
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": ("jd.txt", JD_DOCX.read_bytes(), "text/plain")},
+    )
+    assert response.status_code == 400
+    assert "readable text" in response.json()["detail"]
+
+
+def test_a_parse_that_finds_nothing_is_not_reported_as_success(client, monkeypatch):
+    class EmptyProvider(StubProvider):
+        def structured_extract(self, prompt, schema, *, model=None, system=None, schema_name="Response"):
+            if schema_name == "ParsedQualifications":
+                return {"job_title": "ML Intern", "required": [], "preferred": []}
+            return super().structured_extract(prompt, schema, model=model, system=system, schema_name=schema_name)
+
+    monkeypatch.setattr(server.registry, "active", lambda: (EmptyProvider(), "ulproxy", "stub-model"))
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": ("jd.txt", JD_TEXT.encode(), "text/plain")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["qualifications"] == []
+    assert "no qualifications could be identified" in payload["warning"]
+
+
+def test_a_successful_parse_carries_no_warning(client, stub):
+    screening_id = client.post("/api/screenings", json={}).json()["id"]
+    response = client.post(
+        f"/api/screenings/{screening_id}/parse-jd",
+        files={"file": ("jd.txt", JD_TEXT.encode(), "text/plain")},
+    )
+    assert response.json()["warning"] == ""
+
+
 def test_parse_jd_rejects_a_file_with_no_text(client, stub):
     screening_id = client.post("/api/screenings", json={}).json()["id"]
     response = client.post(

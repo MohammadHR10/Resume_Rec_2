@@ -194,11 +194,11 @@ function jdSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
       ? `<div class="fw-semibold">${escapeHtml(detail.screening.jdFilename || "Position description loaded")}</div>
          <div class="text-muted small">Drop another PDF to re-parse it.</div>`
       : `<div class="fw-semibold">Drop the position description here</div>
-         <div class="text-muted small">PDF (or plain text). It is parsed into itemized required and preferred qualifications.</div>`,
+         <div class="text-muted small">PDF, Word (.docx) or plain text. It is parsed into itemized required and preferred qualifications.</div>`,
   );
   const input = el("input", "d-none") as HTMLInputElement;
   input.type = "file";
-  input.accept = ".pdf,.txt";
+  input.accept = ".pdf,.docx,.txt,.md";
   body.append(zone, input);
 
   const status = el("div", "small mb-3");

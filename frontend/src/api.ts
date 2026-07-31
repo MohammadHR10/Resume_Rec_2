@@ -68,10 +68,13 @@ export const deleteScreening = (id: string) =>
 export async function parseJobDescription(id: string, file: File) {
   const form = new FormData();
   form.append("file", file);
-  return request<{ jobTitle: string; qualifications: Qualification[]; provider: string; model: string }>(
-    `/api/screenings/${id}/parse-jd`,
-    { method: "POST", body: form },
-  );
+  return request<{
+    jobTitle: string;
+    qualifications: Qualification[];
+    provider: string;
+    model: string;
+    warning: string;
+  }>(`/api/screenings/${id}/parse-jd`, { method: "POST", body: form });
 }
 
 export const saveQualifications = (

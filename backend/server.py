@@ -23,7 +23,12 @@ from pydantic import BaseModel
 
 from . import audit, db, export, jd_parse
 from .chat import session as chat_session
-from .extraction import extract_text_from_bytes, extract_text_from_pdf
+from .extraction import (
+    extract_text_from_bytes,
+    extract_text_from_docx,
+    extract_text_from_pdf,
+    looks_binary,
+)
 from .llm import registry
 from .llm.base import LLMError
 from .pipeline import (
@@ -81,6 +86,62 @@ def _qual_payload(screening_id: str) -> list[dict[str, Any]]:
         prefix = "R" if qual["kind"] == "required" else "P"
         out.append({**qual, "label": f"{prefix}{counters[qual['kind']]}"})
     return out
+
+
+#: What the JD dropzone accepts, and how each type is read.
+DOCUMENT_READERS = {
+    ".pdf": lambda data: extract_text_from_bytes(data),
+    ".docx": lambda data: extract_text_from_docx(data),
+    ".txt": lambda data: data.decode("utf-8", errors="replace"),
+    ".md": lambda data: data.decode("utf-8", errors="replace"),
+}
+
+
+def _extract_document(filename: str, contents: bytes) -> str:
+    """Read an uploaded position description, or explain why it cannot be read.
+
+    Routing on the extension rather than falling back to a UTF-8 decode: the
+    fallback silently turned a .docx into mojibake, handed that to the model,
+    and produced an empty checklist that looked like a successful parse.
+    """
+    suffix = os.path.splitext(filename)[1].lower()
+    reader = DOCUMENT_READERS.get(suffix)
+    if reader is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{filename or 'That file'} is a {suffix or 'unrecognised'} file. "
+                f"Upload one of: {', '.join(sorted(DOCUMENT_READERS))}."
+                + (
+                    " Save the .doc as .docx or export it to PDF first."
+                    if suffix == ".doc"
+                    else ""
+                )
+            ),
+        )
+
+    text = reader(contents)
+    if not text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No text could be extracted from {filename}. "
+                + (
+                    "Scanned PDFs hold images rather than text and need OCR first."
+                    if suffix == ".pdf"
+                    else "The file may be empty or corrupt."
+                )
+            ),
+        )
+    if looks_binary(text):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{filename} does not appear to contain readable text — it may be a "
+                f"different format than its {suffix} extension suggests."
+            ),
+        )
+    return text
 
 
 def _stage_counts(screening_id: str) -> dict[str, int]:
@@ -304,16 +365,7 @@ def delete_screening(screening_id: str) -> dict[str, bool]:
 async def parse_jd(screening_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
     _screening_or_404(screening_id)
     contents = await file.read()
-
-    if (file.filename or "").lower().endswith(".pdf"):
-        text = extract_text_from_bytes(contents)
-    else:
-        text = contents.decode("utf-8", errors="replace")
-    if not text.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="No text could be extracted from that file. Scanned PDFs need OCR first.",
-        )
+    text = _extract_document(file.filename or "", contents)
 
     provider, provider_name, model = registry.active()
     if not model:
@@ -346,11 +398,21 @@ async def parse_jd(screening_id: str, file: UploadFile = File(...)) -> dict[str,
         + [{"text": t, "kind": "preferred"} for t in parsed["preferred"]],
     )
 
+    qualifications = _qual_payload(screening_id)
     return {
         "jobTitle": parsed["job_title"],
-        "qualifications": _qual_payload(screening_id),
+        "qualifications": qualifications,
         "provider": provider_name,
         "model": model,
+        # A parse that found nothing is not a successful parse. Saying so here
+        # is what stops the UI reporting a win over an empty checklist.
+        "warning": (
+            ""
+            if qualifications
+            else "The document was read, but no qualifications could be identified in it. "
+            "Check that it contains a qualifications or requirements section, or add the "
+            "items by hand below."
+        ),
     }
 
 

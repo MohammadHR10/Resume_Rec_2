@@ -10,6 +10,7 @@ import { parseJobDescription, saveQualifications } from "./api.ts";
 import type { Qualification, QualKind } from "./types.ts";
 import { busy, el, escapeHtml, notify, wireDropzone } from "./ui.ts";
 
+
 interface Item {
   text: string;
   kind: QualKind;
@@ -258,9 +259,19 @@ export function initJdDropzone(
       `Reading ${escapeHtml(file.name)} and itemizing its qualifications…`;
     try {
       const parsed = await parseJobDescription(screeningId, file);
-      statusNode.innerHTML = `<span class="text-success">Parsed <strong>${escapeHtml(
-        file.name,
-      )}</strong> with ${parsed.provider}/${parsed.model}.</span>`;
+      const count = parsed.qualifications.length;
+      if (count === 0) {
+        statusNode.innerHTML = `<span class="text-warning-emphasis">Read <strong>${escapeHtml(
+          file.name,
+        )}</strong>, but found no qualifications in it.</span>`;
+        notify(parsed.warning || "No qualifications were found in that document.", "warning");
+      } else {
+        statusNode.innerHTML = `<span class="text-success">Parsed <strong>${escapeHtml(
+          file.name,
+        )}</strong> into ${count} qualification${count === 1 ? "" : "s"} with ${escapeHtml(
+          parsed.provider,
+        )}/${escapeHtml(parsed.model)}.</span>`;
+      }
       onParsed(parsed.qualifications, parsed.jobTitle);
     } catch (error) {
       statusNode.innerHTML = "";
