@@ -45,11 +45,18 @@ const STAGE_TITLES: Record<Stage, string> = {
 };
 
 const STAGE_BLURBS: Record<Stage, string> = {
-  "1": "Everyone starts here. The AI recommends a pass only when every required qualification is met — you decide who advances.",
+  "1": "Everyone starts here. Only the required qualifications are shown and only they are gated on — the AI recommends a pass when every one is met. Preferred qualifications play no part at this stage; they rank the survivors in stage 2.",
   "2": "Ranked by preferred-qualification coverage. Promote the shortlist you want to interview.",
   "3": "The confirmed interview shortlist.",
   rejected: "Rejected candidates. Restore any of them back to stage 1.",
 };
+
+function truncate(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const boundary = cut.lastIndexOf(" ");
+  return `${(boundary > limit * 0.6 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
+}
 
 export class StageGrid {
   private api: GridApi<CandidateRow> | null = null;
@@ -168,7 +175,6 @@ export class StageGrid {
       {
         headerName: "Required Met",
         colId: "required",
-        width: 145,
         comparator: (_a, _b, nodeA, nodeB) =>
           (nodeA.data?.required_met ?? 0) - (nodeB.data?.required_met ?? 0),
         valueGetter: (params: ValueGetterParams<CandidateRow>) =>
@@ -178,6 +184,9 @@ export class StageGrid {
         headerName: "Preferred Met",
         colId: "preferred",
         width: 150,
+        // Stage 1 gates on required coverage alone, so preferred coverage is
+        // noise there — showing it invites the reading that it counts.
+        hide: this.stage === "1",
         comparator: (_a, _b, nodeA, nodeB) =>
           (nodeA.data?.preferred_met ?? 0) - (nodeB.data?.preferred_met ?? 0),
         valueGetter: (params: ValueGetterParams<CandidateRow>) =>
@@ -188,14 +197,21 @@ export class StageGrid {
     for (const qual of this.qualifications) {
       columns.push({
         colId: `qual:${qual.id}`,
-        headerName: `${qual.label}. ${qual.text}`,
+        // A full qualification sentence wraps to six lines and pushes the rows
+        // off the screen; the whole sentence is one hover away in the tooltip.
+        headerName: `${qual.label}. ${truncate(qual.text, 46)}`,
         headerTooltip: `${qual.kind === "required" ? "Required" : "Preferred"}: ${qual.text}`,
         width: 145,
         wrapHeaderText: true,
         autoHeaderHeight: true,
-        // Stage 2 is about preferred coverage, so required columns start hidden
-        // there — the reviewer already gated on them in stage 1.
-        hide: this.stage === "2" && qual.kind === "required",
+        // Each stage shows only the qualifications it is about. Stage 1 gates
+        // on required alone, so preferred columns are hidden there — their
+        // presence was being read as "these are counting against me", which is
+        // exactly the confusion a minimum-requirements gate must not create.
+        // Stage 2 is the mirror image; stage 3 and rejected show everything.
+        hide:
+          (this.stage === "1" && qual.kind === "preferred") ||
+          (this.stage === "2" && qual.kind === "required"),
         valueGetter: (params: ValueGetterParams<CandidateRow>) =>
           params.data?.verdicts?.[qual.id]?.verdict ?? "—",
         tooltipValueGetter: (params) =>

@@ -242,6 +242,31 @@ def test_a_gateway_that_rejects_response_format_falls_back_to_prompted_json(tran
     assert "JSON Schema" in retried["messages"][0]["content"]
 
 
+def test_a_truncated_reply_is_reported_as_truncation_not_bad_json(transport):
+    """A reply cut off at the token limit is valid-but-incomplete JSON. Saying
+    'could not parse JSON' sends the reader hunting for the wrong bug."""
+    cut_off = FakeResponse(
+        200,
+        {
+            "choices": [
+                {
+                    "message": {"content": '{"tool_calls":[{"tool":"query_candidates","args_j'},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+    )
+    transport["queue"].append(cut_off)
+    with pytest.raises(base.LLMError, match="cut off"):
+        ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
+
+
+def test_every_completion_asks_for_an_explicit_token_budget(transport):
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    ULProxyProvider(default_model="m").structured_extract("p", SCHEMA)
+    assert transport["calls"][0]["body"]["max_tokens"] == base.DEFAULT_MAX_TOKENS
+
+
 def test_chat_without_a_schema_returns_plain_text(transport):
     transport["queue"].append(completion("Because Bob meets more required quals."))
     answer = ULProxyProvider(default_model="m").chat([{"role": "user", "content": "why?"}])

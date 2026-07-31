@@ -142,6 +142,19 @@ def test_query_candidates_filters_by_verdict_on_a_qualification(ws):
     assert result["candidates"][0]["evidence"].endswith("evidence 2")
 
 
+def test_query_candidates_finds_people_by_the_rank_shown_in_the_grid(ws):
+    """Users refer to candidates by grid rank — "why did 3, 4 and 6 fail?" —
+    and one call must answer for all of them."""
+    result = run_tool(ws, "query_candidates.py", "--rank", "1,3")
+    assert result["matched"] == 2
+    assert {c["name"] for c in result["candidates"]} == {"Alice", "Carol"}
+
+
+def test_explain_rank_accepts_a_rank_as_well_as_a_name(ws):
+    result = run_tool(ws, "explain_rank.py", "1", "3")
+    assert result["ranked_higher"] == "Alice"
+
+
 def test_query_candidates_filters_on_the_ai_recommendation(ws):
     result = run_tool(ws, "query_candidates.py", "--ai-pass", "no")
     assert [c["name"] for c in result["candidates"]] == ["Carol"]

@@ -102,7 +102,12 @@ def fail(message: str, **extra: Any) -> None:
 
 
 def find_candidate(snapshot: dict[str, Any], needle: str) -> dict[str, Any] | None:
-    """Match a candidate by id, then exact name, then unique substring."""
+    """Match a candidate by id, rank, exact name, then unique substring.
+
+    Rank matters because that is how the grid labels people: a user looking at
+    the screen asks "why did 3, 4 and 6 fail?", meaning the rank column, and a
+    model that can only search names will look for a candidate called "3".
+    """
     needle = (needle or "").strip()
     if not needle:
         return None
@@ -110,6 +115,13 @@ def find_candidate(snapshot: dict[str, Any], needle: str) -> dict[str, Any] | No
     for candidate in candidates:
         if candidate["id"] == needle:
             return candidate
+
+    rank_token = needle.lstrip("#").strip()
+    if rank_token.isdigit():
+        ranked = [c for c in candidates if str(c.get("rank")) == rank_token]
+        # Ties share a rank, so only answer when it identifies one person.
+        if len(ranked) == 1:
+            return ranked[0]
     lowered = needle.lower()
     exact = [c for c in candidates if c["name"].lower() == lowered]
     if exact:

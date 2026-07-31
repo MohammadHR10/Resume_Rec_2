@@ -20,7 +20,16 @@ import { showProgress } from "./progress.ts";
 import { StageGrid } from "./stageGrid.ts";
 import type { ScreeningDetail, Stage } from "./types.ts";
 import { UploadForm } from "./uploadForm.ts";
-import { busy, byId, clearAlerts, el, escapeHtml, formatDate, notify } from "./ui.ts";
+import {
+  busy,
+  byId,
+  clearAlerts,
+  CollapsibleCard,
+  el,
+  escapeHtml,
+  formatDate,
+  notify,
+} from "./ui.ts";
 
 const STAGES: Stage[] = ["1", "2", "3", "rejected"];
 const STAGE_TABS: Record<Stage, string> = {
@@ -177,15 +186,19 @@ async function renderScreening(root: HTMLElement, screeningId: string): Promise<
 // -- step 1 + 2: JD intake and checklists -----------------------------------
 
 function jdSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
-  const card = el("div", "card mb-3");
-  card.appendChild(
-    el(
-      "div",
-      "card-header fw-semibold",
-      "1 · Position description → qualification checklist",
-    ),
-  );
-  const body = el("div", "card-body");
+  const card = new CollapsibleCard("1 · Position description → qualification checklist");
+  const body = card.body;
+
+  function summarize(qualifications: { kind: string }[], confirmed: boolean): void {
+    if (!confirmed || qualifications.length === 0) {
+      card.reopen();
+      return;
+    }
+    const required = qualifications.filter((q) => q.kind === "required").length;
+    card.complete(
+      `${required} required, ${qualifications.length - required} preferred — confirmed`,
+    );
+  }
 
   const zone = el(
     "div",
@@ -206,31 +219,32 @@ function jdSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
 
   const listsHost = el("div");
   body.appendChild(listsHost);
-  card.appendChild(body);
 
   const intake = new JdIntake(listsHost, screeningId, (confirmed) => {
     document.dispatchEvent(new CustomEvent("quals-confirmed", { detail: confirmed }));
+    summarize(intake.currentItems(), confirmed);
   });
   intake.load(detail.qualifications, detail.screening.qualsConfirmed);
+  summarize(detail.qualifications, detail.screening.qualsConfirmed);
 
   initJdDropzone(zone, input, screeningId, (qualifications, jobTitle) => {
     intake.load(qualifications, false);
     document.dispatchEvent(new CustomEvent("quals-confirmed", { detail: false }));
+    card.reopen();
     if (jobTitle) {
       const title = document.querySelector("#view h4");
       if (title && !title.textContent?.trim()) title.textContent = jobTitle;
     }
   }, status);
 
-  return card;
+  return card.card;
 }
 
 // -- step 3: resumes and evaluation -----------------------------------------
 
 function uploadSection(screeningId: string, detail: ScreeningDetail) {
-  const card = el("div", "card mb-3");
-  card.appendChild(el("div", "card-header fw-semibold", "2 · Resumes and evaluation"));
-  const body = el("div", "card-body");
+  const card = new CollapsibleCard("2 · Resumes and evaluation");
+  const body = card.body;
 
   const zone = el(
     "div",
@@ -260,7 +274,11 @@ function uploadSection(screeningId: string, detail: ScreeningDetail) {
 
   const progress = el("div", "mt-3 d-none");
   body.appendChild(progress);
-  card.appendChild(body);
+
+  const evaluated = Object.values(detail.stageCounts).reduce((sum, n) => sum + n, 0);
+  if (detail.screening.status === "evaluated" && evaluated > 0) {
+    card.complete(`${evaluated} candidate(s) evaluated`);
+  }
 
   function setEvaluateEnabled(confirmed: boolean): void {
     evaluate.disabled = !confirmed;
@@ -307,6 +325,9 @@ function uploadSection(screeningId: string, detail: ScreeningDetail) {
       showProgress(progress, started.jobId, {
         onDone: () => {
           done();
+          // The step is finished, so it folds away and the stage grids —
+          // which is where the work happens from here — come up the page.
+          card.complete(`${started.candidates} candidate(s) evaluated`);
           document.dispatchEvent(new CustomEvent("stages-changed"));
         },
         onError: () => done(),
@@ -317,7 +338,7 @@ function uploadSection(screeningId: string, detail: ScreeningDetail) {
     }
   });
 
-  return { node: card };
+  return { node: card.card };
 }
 
 // -- step 4: stage tabs, grids, chat ----------------------------------------

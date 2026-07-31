@@ -12,6 +12,10 @@ def main() -> None:
     parser = argument_parser("List candidates with their verdicts and coverage.")
     parser.add_argument("--stage", help="Only candidates currently in this stage (1, 2, 3, rejected).")
     parser.add_argument("--name", help="Substring match on candidate name.")
+    parser.add_argument(
+        "--rank",
+        help="Rank shown in the grid, e.g. 3. Repeatable as a comma-separated list: 3,4,6",
+    )
     parser.add_argument("--qual", help="Qualification label (R1, P2), id, or text substring.")
     parser.add_argument(
         "--verdict",
@@ -38,6 +42,10 @@ def main() -> None:
         rows = [r for r in rows if str(r["stage"]) == str(args.stage)]
     if args.name:
         rows = [r for r in rows if args.name.lower() in r["name"].lower()]
+    if args.rank:
+        # One call answers "why did 3, 4 and 6 fail?" instead of three.
+        wanted = {t.strip().lstrip("#") for t in args.rank.split(",") if t.strip()}
+        rows = [r for r in rows if str(r.get("rank")) in wanted]
     if args.min_required is not None:
         rows = [r for r in rows if r["required_met"] >= args.min_required]
     if args.ai_pass:

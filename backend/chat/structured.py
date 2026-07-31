@@ -34,13 +34,15 @@ TOOLS: dict[str, dict[str, Any]] = {
         "script": "query_candidates.py",
         "description": (
             "List candidates with verdicts and coverage. Args: stage (1|2|3|rejected), "
-            "name (substring), qual (label like R1), verdict (Meets|Partial|No, used with qual), "
+            "name (substring), rank (grid rank, comma-separated for several: \"3,4,6\"), "
+            "qual (label like R1), verdict (Meets|Partial|No, used with qual), "
             "min_required (int), ai_pass (yes|no), evidence (true to include quoted evidence), "
-            "limit (int)."
+            "limit (int). Prefer ONE call with several ranks over one call per candidate."
         ),
         "params": {
             "stage": {"flag": "--stage"},
             "name": {"flag": "--name"},
+            "rank": {"flag": "--rank"},
             "qual": {"flag": "--qual"},
             "verdict": {"flag": "--verdict"},
             "min_required": {"flag": "--min-required"},

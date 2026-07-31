@@ -223,7 +223,7 @@ read-only SQLite copy if you need the promotion audit trail.
 Run these with the workspace's python. Each prints one JSON object on stdout.
 
 ```
-python {tools / 'query_candidates.py'} [--stage 1] [--name X] [--qual R1] [--verdict Meets] [--evidence]
+python {tools / 'query_candidates.py'} [--stage 1] [--name X] [--rank 3,4,6] [--qual R1] [--verdict Meets] [--evidence]
 python {tools / 'explain_rank.py'} "Candidate A" "Candidate B"
 python {tools / 'stage_stats.py'} --stage 1
 python {tools / 'whatif.py'} --remove-qual R3 P1 [--stage 1]
@@ -240,6 +240,10 @@ python {tools / 'grid_action.py'} [--sort required:desc] [--filter R1=Meets] [--
 Answer in prose for a hiring reviewer, not in JSON. Cite specific candidates,
 verdicts and evidence. If a tool contradicts your expectation, the tool is right.
 Never invent a verdict, a count or a rank — read them from the snapshot or a tool.
+
+The user is looking at a grid and will refer to people by the rank shown in it
+("why did 3, 4 and 6 fail?"). Those are ranks, not names — pass them to
+`--rank 3,4,6` in a single call rather than searching for a candidate named "3".
 """
 
 

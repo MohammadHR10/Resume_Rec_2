@@ -35,6 +35,11 @@ export class JdIntake {
     this.onConfirmedChange = onConfirmedChange;
   }
 
+  /** The current list, for callers that summarize it (e.g. a collapsed card). */
+  currentItems(): { text: string; kind: QualKind }[] {
+    return this.items.map((item) => ({ text: item.text, kind: item.kind }));
+  }
+
   load(qualifications: Qualification[], confirmed: boolean): void {
     this.items = qualifications.map((qual) => ({ text: qual.text, kind: qual.kind }));
     this.confirmed = confirmed;

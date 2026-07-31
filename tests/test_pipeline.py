@@ -33,6 +33,38 @@ def test_candidate_key_groups_ats_style_resume_and_cover_letter():
     assert pipeline.candidate_key("Reed, Martin CL Proj Manage UL.pdf") == "Reed, Martin"
 
 
+def test_candidate_key_handles_a_multi_word_surname():
+    """The comma marks where the surname ends, and it is not always on the
+    first token — keying on token[0] split these people one row per document."""
+    assert (
+        pipeline.candidate_key("Abdul Kadhar, Nashwa Resume.pdf")
+        == pipeline.candidate_key("Abdul Kadhar, Nashwa CL ML UL.pdf")
+        == "Abdul Kadhar, Nashwa"
+    )
+    assert (
+        pipeline.candidate_key("Van Der Berg, Anna Resume.pdf") == "Van Der Berg, Anna"
+    )
+
+
+def test_candidate_key_drops_middle_names_and_document_labels():
+    assert (
+        pipeline.candidate_key("Lee, Jordan James Resume.pdf")
+        == pipeline.candidate_key("Lee, Jordan CL.pdf")
+        == "Lee, Jordan"
+    )
+
+
+def test_a_zip_of_resumes_and_cover_letters_groups_one_row_per_person():
+    files = [
+        f"/tmp/{name}"
+        for person in ("Abdul Kadhar, Nashwa", "Agbaetuo, Chinwendu", "Amin, Bhargav")
+        for name in (f"{person} Resume.pdf", f"{person} CL ML UL.pdf")
+    ]
+    groups = pipeline.group_files(files)
+    assert len(groups) == 3, "each person is one candidate, not one per document"
+    assert all(len(paths) == 2 for paths in groups.values())
+
+
 def test_candidate_key_keeps_whole_stem_when_there_is_no_comma_convention():
     # Truncating these to two tokens would collide every audit-corpus variant.
     assert pipeline.candidate_key("Resume_31_(BG1_R1)Ayaan_Rahman.pdf") == "Resume_31_(BG1_R1)Ayaan_Rahman"

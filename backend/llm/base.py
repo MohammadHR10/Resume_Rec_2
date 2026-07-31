@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 4
 RETRY_BASE_SECONDS = 1.0
+
+# Gateways differ on what they allow when the caller says nothing, and a small
+# default silently truncates mid-JSON — which surfaces as an unparseable
+# response rather than as "the reply was cut off". Ask explicitly.
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "8192"))
 
 # Idle connections get dropped by gateways between batches; closing after each
 # request trades a little latency for not eating a RemoteDisconnected mid-run.
@@ -183,6 +189,7 @@ class OpenAICompatibleProvider(LLMProvider):
         default_model: str = "",
         timeout: float = 180.0,
         supports_json_schema: bool = True,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self.name = name
         self.label = label
@@ -191,6 +198,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.default_model = default_model
         self.timeout = timeout
         self.supports_json_schema = supports_json_schema
+        self.max_tokens = max_tokens
 
     # -- configuration -----------------------------------------------------
 
@@ -324,6 +332,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             + list(messages),
             "temperature": 0,
+            "max_tokens": self.max_tokens,
             **self.extra_body(),
         }
         if strict_schema and self.supports_json_schema:
@@ -385,7 +394,16 @@ class OpenAICompatibleProvider(LLMProvider):
 
             try:
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                content = choice["message"]["content"]
+                # A reply cut off at the token limit is not a malformed reply,
+                # and saying so is the difference between an actionable error
+                # and "could not parse JSON from model response: {"tool_ca…".
+                if choice.get("finish_reason") == "length":
+                    raise LLMError(
+                        f"{self.label}: the model's reply was cut off at the {self.max_tokens}-token "
+                        "limit. Raise LLM_MAX_TOKENS, or ask a narrower question."
+                    )
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 last_error = f"malformed response: {exc}"
                 if attempt < MAX_RETRIES:

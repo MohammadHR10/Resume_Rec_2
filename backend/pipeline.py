@@ -41,20 +41,30 @@ JOBS: dict[str, dict[str, Any]] = {}
 # Candidate grouping
 # ---------------------------------------------------------------------------
 
+#: How many leading tokens may make up a surname before the comma.
+MAX_SURNAME_TOKENS = 4
+
+
 def candidate_key(filename: str) -> str:
     """Group key for the files belonging to one candidate.
 
     Two naming conventions show up in practice. Applicant-tracking exports use
     ``LastName, FirstName <doc type>.pdf`` and put a resume and a cover letter
-    in separate files, so the first two whitespace tokens identify the person.
-    Everything else — including the audit corpus's ``Resume_31_(BG1_R1)Name`` —
-    is one file per candidate, where the whole stem is the identity and
-    truncating it would collide distinct people.
+    in separate files, so the name up to and including the given name
+    identifies the person. Everything else — including the audit corpus's
+    ``Resume_31_(BG1_R1)Name`` — is one file per candidate, where the whole
+    stem is the identity and truncating it would collide distinct people.
+
+    The comma marks where the surname ends, and it is **not** always on the
+    first token: "Abdul Kadhar, Nashwa" and "Van Der Berg, Anna" are surnames
+    of several words. Keying on the first token alone split those people into
+    one candidate per document.
     """
     stem = os.path.splitext(os.path.basename(filename))[0]
     tokens = stem.split()
-    if len(tokens) >= 2 and tokens[0].endswith(","):
-        return " ".join(tokens[:2])
+    for index, token in enumerate(tokens[:MAX_SURNAME_TOKENS]):
+        if token.endswith(",") and len(tokens) > index + 1:
+            return " ".join(tokens[: index + 2])
     return stem
 
 
