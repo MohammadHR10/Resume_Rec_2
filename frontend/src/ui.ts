@@ -49,7 +49,24 @@ export function wireDropzone(
   input: HTMLInputElement,
   onFiles: (files: File[]) => void,
 ): void {
+  // The input is hidden off-screen rather than with `display: none`: a file
+  // input that is not rendered cannot reliably be opened by a programmatic
+  // .click(), which is why clicking the dropzone did nothing. Bootstrap's
+  // .d-none is display:none !important, so it is removed rather than overridden.
+  input.classList.remove("d-none");
+  input.classList.add("visually-hidden-input");
+  input.tabIndex = -1;
+
+  zone.setAttribute("role", "button");
+  zone.tabIndex = 0;
   zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (event) => {
+    const key = (event as KeyboardEvent).key;
+    if (key === "Enter" || key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
   zone.addEventListener("dragover", (event) => {
     event.preventDefault();
     zone.classList.add("dropzone-active");

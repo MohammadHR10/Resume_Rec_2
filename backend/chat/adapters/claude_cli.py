@@ -24,8 +24,18 @@ logger = logging.getLogger(__name__)
 NAME = "claude_cli"
 
 
+def executable() -> str | None:
+    """Resolve claude to a full path before spawning it.
+
+    Same reason as the codex adapter: a CLI installed as a Windows shim is
+    found by ``shutil.which`` through PATHEXT but cannot be spawned by bare
+    name, because CreateProcess does not apply PATHEXT itself.
+    """
+    return shutil.which("claude")
+
+
 def available() -> bool:
-    return shutil.which("claude") is not None
+    return executable() is not None
 
 
 def run_turn(
@@ -43,12 +53,13 @@ def run_turn(
     Raises ``RuntimeError`` on any failure so ``session.py`` can degrade the
     turn to structured mode.
     """
-    if not available():
-        raise RuntimeError("the claude CLI is not installed in this container")
+    binary = executable()
+    if not binary:
+        raise RuntimeError("the claude CLI is not installed or not on PATH")
 
     session_id = harness_sid or str(uuid.uuid4())
     command = [
-        "claude",
+        binary,
         "-p",
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
@@ -73,6 +84,11 @@ def run_turn(
             input=question,
             capture_output=True,
             text=True,
+            # Explicit UTF-8: text=True otherwise encodes stdin with the
+            # locale encoding, which on Windows is cp1252 — the brief's em
+            # dashes then reach the CLI as bytes it rejects as invalid UTF-8.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=workspace,
             env=process_env,

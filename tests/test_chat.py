@@ -373,6 +373,38 @@ def test_build_command_ignores_arguments_a_tool_does_not_take(ws):
 # Mode selection and degradation
 # ---------------------------------------------------------------------------
 
+def test_the_adapters_spawn_a_resolved_path_not_a_bare_name(monkeypatch):
+    """On Windows an npm-installed CLI is a .CMD shim: shutil.which finds it
+    through PATHEXT, but spawning the bare name fails with "cannot find the
+    file specified" because CreateProcess does not apply PATHEXT itself."""
+    from backend.chat.adapters import claude_cli, codex_cli
+
+    for module, name, resolved in (
+        (codex_cli, "codex", r"C:\npm\codex.CMD"),
+        (claude_cli, "claude", r"C:\bin\claude.EXE"),
+    ):
+        monkeypatch.setattr(module.shutil, "which", lambda n, r=resolved: r)
+        spawned: dict = {}
+
+        def fake_run(command, **kwargs):
+            spawned["argv0"] = command[0]
+            raise OSError("stopped before spawning")
+
+        monkeypatch.setattr(module.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError):
+            module.run_turn(workspace=".", question="hi", model="m")
+        assert spawned["argv0"] == resolved, f"{name} was spawned by bare name"
+
+
+def test_an_adapter_that_is_not_installed_says_so(monkeypatch):
+    from backend.chat.adapters import codex_cli
+
+    monkeypatch.setattr(codex_cli.shutil, "which", lambda _n: None)
+    assert codex_cli.available() is False
+    with pytest.raises(RuntimeError, match="not installed or not on PATH"):
+        codex_cli.run_turn(workspace=".", question="hi")
+
+
 def test_a_failed_harness_turn_degrades_to_structured(monkeypatch, screening):
     provider = ScriptedProvider([{"tool_calls": [], "answer": "Structured answered instead."}])
     monkeypatch.setattr(chat_session.registry, "active", lambda: (provider, "ulproxy", "m"))

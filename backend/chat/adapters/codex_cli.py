@@ -24,8 +24,19 @@ logger = logging.getLogger(__name__)
 NAME = "codex_cli"
 
 
+def executable() -> str | None:
+    """Resolve codex to a full path before spawning it.
+
+    On Windows an npm-installed codex is a ``codex.CMD`` shim. ``shutil.which``
+    finds it via PATHEXT, but spawning the bare name ``codex`` fails with
+    "The system cannot find the file specified" — CreateProcess does not apply
+    PATHEXT itself. Passing the resolved path works on every platform.
+    """
+    return shutil.which("codex")
+
+
 def available() -> bool:
-    return shutil.which("codex") is not None
+    return executable() is not None
 
 
 def run_turn(
@@ -39,10 +50,11 @@ def run_turn(
     timeout: float = 300.0,
 ) -> dict:
     """Run one turn. Returns ``{"text": str, "harness_sid": str}``."""
-    if not available():
-        raise RuntimeError("the codex CLI is not installed in this container")
+    binary = executable()
+    if not binary:
+        raise RuntimeError("the codex CLI is not installed or not on PATH")
 
-    command = ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
+    command = [binary, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
                "-C", workspace]
     if model:
         command.extend(["-m", model])
@@ -65,6 +77,11 @@ def run_turn(
             input=stdin_text,
             capture_output=True,
             text=True,
+            # Explicit UTF-8: text=True otherwise encodes stdin with the
+            # locale encoding, which on Windows is cp1252 — the brief's em
+            # dashes then reach the CLI as bytes it rejects as invalid UTF-8.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=workspace,
             env=process_env,

@@ -15,9 +15,21 @@ import logging
 import re
 import zipfile
 
-import fitz  # PyMuPDF
-
 logger = logging.getLogger(__name__)
+
+
+def _fitz():
+    """Import PyMuPDF on first use.
+
+    The chat workspace's analysis tools import the ranking code from
+    ``pipeline``, which imports this module — and they run under whatever
+    ``python`` a CLI harness finds on PATH, which is not necessarily the one
+    holding this app's dependencies. Nothing in those tools reads a PDF, so a
+    module-level import would refuse to start them for a library they never use.
+    """
+    import fitz  # PyMuPDF
+
+    return fitz
 
 #: Paragraph, tab and line-break elements that carry layout we want to keep.
 _PARAGRAPH_END = re.compile(r"</w:p>")
@@ -29,7 +41,7 @@ _TAG = re.compile(r"<[^>]+>")
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract all text from a PDF on disk. Returns '' on any failure."""
     try:
-        with fitz.open(file_path) as pdf:
+        with _fitz().open(file_path) as pdf:
             return "".join(page.get_text() for page in pdf)
     except Exception as exc:  # noqa: BLE001 - a bad PDF must not kill a batch
         logger.error("Error extracting text from %s: %s", file_path, exc)
@@ -39,7 +51,7 @@ def extract_text_from_pdf(file_path: str) -> str:
 def extract_text_from_bytes(data: bytes) -> str:
     """Extract all text from PDF bytes. Returns '' on any failure."""
     try:
-        with fitz.open(stream=data, filetype="pdf") as pdf:
+        with _fitz().open(stream=data, filetype="pdf") as pdf:
             return "".join(page.get_text() for page in pdf)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error extracting text from uploaded PDF: %s", exc)

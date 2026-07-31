@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -220,14 +221,15 @@ read-only SQLite copy if you need the promotion audit trail.
 
 ## Tools
 
-Run these with the workspace's python. Each prints one JSON object on stdout.
+Each prints one JSON object on stdout. **Use the interpreter named below**, not
+a bare `python` — it is the one holding this app's dependencies.
 
 ```
-python {tools / 'query_candidates.py'} [--stage 1] [--name X] [--rank 3,4,6] [--qual R1] [--verdict Meets] [--evidence]
-python {tools / 'explain_rank.py'} "Candidate A" "Candidate B"
-python {tools / 'stage_stats.py'} --stage 1
-python {tools / 'whatif.py'} --remove-qual R3 P1 [--stage 1]
-python {tools / 'grid_action.py'} [--sort required:desc] [--filter R1=Meets] [--clear]
+{sys.executable} {tools / 'query_candidates.py'} [--stage 1] [--name X] [--rank 3,4,6] [--qual R1] [--verdict Meets] [--evidence]
+{sys.executable} {tools / 'explain_rank.py'} "Candidate A" "Candidate B"
+{sys.executable} {tools / 'stage_stats.py'} --stage 1
+{sys.executable} {tools / 'whatif.py'} --remove-qual R3 P1 [--stage 1]
+{sys.executable} {tools / 'grid_action.py'} [--sort required:desc] [--filter R1=Meets] [--clear]
 ```
 
 - `whatif.py` is a real recompute using the same ranking code as the grid — quote
