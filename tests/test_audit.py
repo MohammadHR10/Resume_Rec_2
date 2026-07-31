@@ -74,7 +74,8 @@ SWE_II = Path(__file__).resolve().parent.parent / "test-resumes" / "swe_ii_corpu
 def test_the_position_description_is_not_treated_as_a_candidate():
     files = [Path(p).name for p in audit.list_corpus(SWE_II)]
     assert "position-description.pdf" not in files
-    assert len(files) == 24  # 12 baselines + 12 gender variants
+    # 4 people x 3 levels x (baseline + gender variant + race variant)
+    assert len(files) == 36
 
 
 def test_every_person_has_all_three_skill_levels():
@@ -115,16 +116,18 @@ def test_pairs_come_from_the_corpus_manifest():
     """A generated corpus states which variant came from which baseline; this
     module should not have to parse that back out of filenames."""
     pairs, baselines, unpaired = audit.load_pairs(SWE_II)
-    assert len(baselines) == 12
-    assert len(pairs) == 12
+    assert len(baselines) == 12, "the unmarked resumes"
+    assert len(pairs) == 24, "12 gender + 12 race"
     assert unpaired == []
-    assert {p["attribute"] for p in pairs} == {"gender"}
+    assert {p["attribute"] for p in pairs} == {"gender", "race"}
 
 
 def test_every_skill_level_has_two_male_and_two_female_variants():
     pairs, _, _ = audit.load_pairs(SWE_II)
     by_level: dict[str, list[str]] = {}
     for pair in pairs:
+        if pair["attribute"] != "gender":
+            continue
         by_level.setdefault(pair["level"], []).append(pair["attribute_label"])
     assert set(by_level) == {"senior", "junior", "unqualified"}
     for level, labels in by_level.items():
@@ -132,6 +135,50 @@ def test_every_skill_level_has_two_male_and_two_female_variants():
             "Gender — female", "Gender — female",
             "Gender — male", "Gender — male",
         ], level
+
+
+def test_every_skill_level_covers_all_four_ethnicities():
+    pairs, _, _ = audit.load_pairs(SWE_II)
+    by_level: dict[str, list[str]] = {}
+    for pair in pairs:
+        if pair["attribute"] != "race":
+            continue
+        by_level.setdefault(pair["level"], []).append(pair["attribute_label"])
+    assert set(by_level) == {"senior", "junior", "unqualified"}
+    for level, labels in by_level.items():
+        assert sorted(labels) == [
+            "Race / Ethnicity — Black",
+            "Race / Ethnicity — East Asian",
+            "Race / Ethnicity — Hispanic",
+            "Race / Ethnicity — South Asian",
+        ], level
+
+
+def test_a_race_variant_is_compared_against_the_same_gender():
+    """Race is measured with gender held constant: the white-coded gendered
+    resume is what a raced one is read against, not the they/them baseline.
+    Otherwise race and gender move together and neither can be attributed."""
+    import json as _json
+
+    manifest = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))
+    gender_of = {r["file"]: r["gender"] for r in manifest["resumes"]}
+
+    race_pairs = [p for p in manifest["pairs"] if p["attribute"] == "race"]
+    assert race_pairs
+    for pair in race_pairs:
+        assert "gender-" in pair["baseline"], "a race variant reads against the gendered resume"
+        assert gender_of[pair["baseline"]] == gender_of[pair["variant"]], pair["variant"]
+
+
+def test_no_race_variant_carries_a_religion_signal():
+    """Arabic and Muslim-coded names signal religion as strongly as ethnicity,
+    and religion is a separate pass."""
+    import json as _json
+
+    manifest = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))
+    names = " ".join(r["name"] for r in manifest["resumes"] if r.get("role") == "race").lower()
+    for collides in ("mohammed", "muhammad", "fatima", "aisha", "omar", "ahmed"):
+        assert collides not in names
 
 
 def test_a_gender_variant_changes_only_a_handful_of_lines():
@@ -179,7 +226,7 @@ def test_corpus_discovery_finds_both_corpora():
     found = {c["name"]: c for c in audit.describe_corpora()}
     assert {"swe_ii_corpus", "SWE_pdf"} <= set(found)
     assert found["swe_ii_corpus"]["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
-    assert found["swe_ii_corpus"]["pairs"] == 12
+    assert found["swe_ii_corpus"]["pairs"] == 24
     assert found["swe_ii_corpus"]["positionDescription"] == "position-description.pdf"
     assert found["SWE_pdf"]["pairs"] == 24
 

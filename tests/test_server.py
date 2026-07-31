@@ -567,7 +567,7 @@ def test_a_screening_can_be_built_from_a_corpus_without_any_upload(client, stub)
     against; making someone drag those same files into a browser is busywork."""
     payload = client.post("/api/audits/corpus/swe_ii_corpus/screening").json()
 
-    assert payload["candidates"] == 24
+    assert payload["candidates"] == 36
     assert payload["qualifications"]
     rows = db.query(
         "SELECT name, source_files FROM candidate WHERE screening_id=?", (payload["screeningId"],)

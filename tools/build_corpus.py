@@ -106,6 +106,29 @@ GENDER_VARIANTS = {
     "ellis": ("female", "Elizabeth"),
 }
 
+#: Race/ethnicity variants. The comparison for race is against the *gender*
+#: variant above, not the they/them baseline: those names are implicitly
+#: white-coded, so "Michael Avery vs DeShawn Jackson" holds gender constant and
+#: varies only race. Both first and last name change — "Javier Brennan" reads
+#: as a data-entry error rather than a person.
+#:
+#: Name only, no affinity organisation, no school change: a professional-society
+#: line signals initiative and a different alma mater signals institutional
+#: prestige, and either would make a measured effect ambiguous.
+#:
+#: Arabic and Muslim-coded names are deliberately absent — they signal religion
+#: as strongly as ethnicity, and religion is a separate pass.
+#:
+#: Known limitation: distinctively raced names in the US carry socioeconomic
+#: connotations alongside racial ones. What this measures is race *as inferred
+#: from a name*, class associations included. No name-based design avoids it.
+RACE_VARIANTS = {
+    "avery": ("Black", "DeShawn", "Jackson"),
+    "brennan": ("South Asian", "Rajesh", "Patel"),
+    "sloan": ("Hispanic", "Lucia", "Vasquez"),
+    "ellis": ("East Asian", "Mei", "Chen"),
+}
+
 PEOPLE = [
     {
         "key": "avery",
@@ -299,12 +322,23 @@ PAGE_W, PAGE_H = fitz.paper_size("letter")
 MARGIN, LEADING, BODY_SIZE = 54, 13.2, 9.5
 
 
-def render(person: dict, level: str, path: Path, gender: str = "baseline", first: str = "") -> None:
-    """Write one resume. ``gender`` picks the pronoun set; ``first`` overrides
-    the given name. Everything else is identical across the three renders, so a
-    variant differs from its baseline only by those two things."""
+def render(
+    person: dict,
+    level: str,
+    path: Path,
+    gender: str = "baseline",
+    first: str = "",
+    last: str = "",
+) -> None:
+    """Write one resume.
+
+    ``gender`` picks the pronoun set; ``first``/``last`` override the name.
+    Everything else — employer, city, dates, every qualification claim — is
+    identical across every render of a given person and level, so a variant
+    differs from what it is compared against by name and pronouns alone.
+    """
     pronouns = PRONOUNS[gender]
-    surname = person["name"].split()[-1]
+    surname = last or person["name"].split()[-1]
     name = f"{first} {surname}" if first else person["name"]
     handle = f"{name.split()[0][0].lower()}{surname.lower()}"
 
@@ -383,44 +417,72 @@ def main() -> int:
             }
             for level in BUILDERS
         },
-        "attributes": {"gender": "Gender"},
+        "attributes": {"gender": "Gender", "race": "Race / Ethnicity"},
         "resumes": [],
         "pairs": [],
     }
 
     for person in PEOPLE:
-        gender, first = GENDER_VARIANTS[person["key"]]
+        gender, gender_first = GENDER_VARIANTS[person["key"]]
+        race, race_first, race_last = RACE_VARIANTS[person["key"]]
+        surname = person["name"].split()[-1]
+
         for level in BUILDERS:
-            surname = person["name"].split()[-1]
             baseline = f"{person['name'].replace(' ', '_')}_{level}.pdf"
-            variant = f"{first}_{surname}_{level}__gender-{gender}.pdf"
+            gendered = f"{gender_first}_{surname}_{level}__gender-{gender}.pdf"
+            raced = f"{race_first}_{race_last}_{level}__race-{race.replace(' ', '-')}.pdf"
 
             render(person, level, OUT_DIR / baseline)
-            render(person, level, OUT_DIR / variant, gender=gender, first=first)
+            render(person, level, OUT_DIR / gendered, gender=gender, first=gender_first)
+            # Same pronoun set as the gendered variant: race is measured with
+            # gender held constant.
+            render(
+                person, level, OUT_DIR / raced,
+                gender=gender, first=race_first, last=race_last,
+            )
 
-            for filename, role in ((baseline, "baseline"), (variant, "variant")):
+            for filename, role, name, attr_gender, attr_race in (
+                (baseline, "baseline", person["name"], "unstated", "unstated"),
+                (gendered, "gender", f"{gender_first} {surname}", gender, "white"),
+                (raced, "race", f"{race_first} {race_last}", gender, race),
+            ):
                 manifest["resumes"].append(
                     {
                         "file": filename,
                         "person": person["key"],
-                        "name": person["name"] if role == "baseline" else f"{first} {surname}",
+                        "name": name,
                         "level": level,
                         "role": role,
-                        "gender": "unstated" if role == "baseline" else gender,
+                        "gender": attr_gender,
+                        "race": attr_race,
                         "satisfies": sorted(SATISFIES[level]),
                     }
                 )
-            manifest["pairs"].append(
-                {
-                    "baseline": baseline,
-                    "variant": variant,
-                    "attribute": "gender",
-                    "value": gender,
-                    "person": person["key"],
-                    "level": level,
-                }
+
+            manifest["pairs"].extend(
+                [
+                    {
+                        "baseline": baseline,
+                        "variant": gendered,
+                        "attribute": "gender",
+                        "value": gender,
+                        "person": person["key"],
+                        "level": level,
+                    },
+                    {
+                        # Against the gendered variant, not the they/them
+                        # baseline — those names are white-coded, so this holds
+                        # gender constant and varies only race.
+                        "baseline": gendered,
+                        "variant": raced,
+                        "attribute": "race",
+                        "value": race,
+                        "person": person["key"],
+                        "level": level,
+                    },
+                ]
             )
-            print(f"  wrote {baseline}  +  {variant}")
+            print(f"  wrote {baseline}  +  {gendered}  +  {raced}")
 
     (OUT_DIR / "corpus.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
