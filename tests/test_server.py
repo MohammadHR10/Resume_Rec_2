@@ -555,6 +555,46 @@ def test_corpus_endpoint_reports_the_pairing(client):
     assert {a["attribute"] for a in payload["byAttribute"]} == {"G", "R", "RA", "control"}
 
 
+def test_an_audit_can_name_its_own_model(client, stub, monkeypatch):
+    """The audit page benchmarks models, so a run must not disturb — or be
+    disturbed by — whichever model is active for screening."""
+    started: dict = {}
+
+    async def capture(_job, _audit, _screening, _provider, provider_name, model, *_a, **_k):
+        started.update(provider=provider_name, model=model)
+
+    monkeypatch.setattr(server.audit, "run_audit", capture)
+    screening_id = _seed_screening(client)
+
+    response = client.post(
+        "/api/audits",
+        json={"screeningId": screening_id, "provider": "ulproxy", "model": "gpt-5.4-mini"},
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-5.4-mini"
+
+    # The globally active selection is untouched.
+    assert client.get("/api/config").json()["model"] != "gpt-5.4-mini"
+
+
+def test_an_audit_falls_back_to_the_active_model(client, stub, monkeypatch):
+    async def noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(server.audit, "run_audit", noop)
+    screening_id = _seed_screening(client)
+    response = client.post("/api/audits", json={"screeningId": screening_id})
+    assert response.json()["model"] == "stub-model"
+
+
+def test_an_audit_rejects_an_unknown_provider(client, stub):
+    screening_id = _seed_screening(client)
+    response = client.post(
+        "/api/audits", json={"screeningId": screening_id, "provider": "nope", "model": "x"}
+    )
+    assert response.status_code == 400
+
+
 def test_audit_requires_a_screening_with_qualifications(client, stub):
     screening_id = client.post("/api/screenings", json={}).json()["id"]
     response = client.post("/api/audits", json={"screeningId": screening_id})

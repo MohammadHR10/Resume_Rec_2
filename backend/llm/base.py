@@ -212,6 +212,7 @@ class OpenAICompatibleProvider(LLMProvider):
         timeout: float = 180.0,
         supports_json_schema: bool = True,
         max_tokens: int | None = None,
+        temperature: float | None = 0.0,
     ) -> None:
         self.name = name
         self.label = label
@@ -221,6 +222,10 @@ class OpenAICompatibleProvider(LLMProvider):
         self.timeout = timeout
         self.supports_json_schema = supports_json_schema
         self.max_tokens = max_tokens if max_tokens is not None else _configured_max_tokens()
+        # 0 for repeatable scoring where the model allows it. None omits the
+        # parameter — reasoning models (the gpt-5 family) accept only their
+        # default and reject any explicit value outright.
+        self.temperature = temperature
 
     # -- configuration -----------------------------------------------------
 
@@ -353,7 +358,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 [{"role": "system", "content": sys_text}] if sys_text else []
             )
             + list(messages),
-            "temperature": 0,
+            **({"temperature": self.temperature} if self.temperature is not None else {}),
             **({"max_tokens": self.max_tokens} if self.max_tokens else {}),
             **self.extra_body(),
         }
@@ -395,21 +400,24 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
                 raise LLMError(f"{self.label}: {last_error}")
 
-            if resp.status_code == 400 and strict_schema is not None and self.supports_json_schema:
-                # The gateway advertised structured outputs and then refused
-                # them. Demote for the life of the process and ask for JSON in
-                # the prompt instead — one retry, then treat it as a real error.
-                if "response_format" in resp.text or "json_schema" in resp.text:
-                    logger.warning(
-                        "%s rejected response_format; falling back to prompt-instructed JSON",
-                        self.name,
-                    )
-                    self.supports_json_schema = False
-                    body.pop("response_format", None)
-                    body["messages"] = _with_system(
-                        body["messages"], _json_instruction(sys_text, strict_schema)
-                    )
-                    continue
+            if (
+                resp.status_code == 400
+                and strict_schema is not None
+                and self.supports_json_schema
+                and ("response_format" in resp.text or "json_schema" in resp.text)
+            ):
+                # The gateway advertised structured outputs and then named them
+                # in a 400. Demote and ask for JSON in the prompt instead.
+                logger.warning(
+                    "%s rejected response_format; falling back to prompt-instructed JSON",
+                    self.name,
+                )
+                self.supports_json_schema = False
+                body.pop("response_format", None)
+                body["messages"] = _with_system(
+                    body["messages"], _json_instruction(sys_text, strict_schema)
+                )
+                continue
 
             if resp.status_code // 100 != 2:
                 raise LLMError(f"{self.label}: HTTP {resp.status_code}: {resp.text[:300]}")

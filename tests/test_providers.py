@@ -127,17 +127,24 @@ def test_an_unparseable_reply_is_not_echoed_back_to_the_user():
 # Requests
 # ---------------------------------------------------------------------------
 
-def test_structured_extract_posts_a_strict_json_schema(transport):
+def test_structured_extract_posts_a_strict_json_schema(gateway, transport):
+    """Against a gateway that honours structured outputs, the schema goes on
+    the wire. (The UL proxy is the exception — see its own test.)"""
     transport["queue"].append(completion('{"name": "Ada", "score": 3}'))
-    provider = ULProxyProvider(default_model="gpt-5.2")
-    result = provider.structured_extract("prompt", SCHEMA)
+    result = FastLLMProvider().structured_extract("prompt", SCHEMA)
 
     assert result == {"name": "Ada", "score": 3}
     body = transport["calls"][0]["body"]
-    assert transport["calls"][0]["url"] == "https://proxy.example/v1/chat/completions"
+    assert transport["calls"][0]["url"] == "https://gateway.example/v1/chat/completions"
     assert body["response_format"]["json_schema"]["strict"] is True
     assert body["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
-    assert body["temperature"] == 0
+    assert transport["calls"][0]["headers"]["Authorization"] == "Bearer gw-key"
+
+
+def test_the_ul_proxy_still_authenticates_and_targets_the_right_url(transport):
+    transport["queue"].append(completion('{"name": "Ada", "score": 3}'))
+    ULProxyProvider(default_model="gpt-5.5").structured_extract("prompt", SCHEMA)
+    assert transport["calls"][0]["url"] == "https://proxy.example/v1/chat/completions"
     assert transport["calls"][0]["headers"]["Authorization"] == "Bearer test-token"
 
 
@@ -247,6 +254,37 @@ def test_the_ul_proxy_sends_no_gateway_specific_extras(transport):
     call = transport["calls"][0]
     assert "seed" not in call["body"]
     assert "hl-project-id" not in call["headers"]
+
+
+def test_the_ul_proxy_request_matches_what_the_proxy_accepts(transport):
+    """Shape taken from azure-openai-proxy/app/proxy/chat_completions.py:
+    `temperature` is forwarded to the Azure Responses API, which the gpt-5
+    family reject; `response_format` is absent from the proxy entirely and is
+    silently dropped, so the schema has to ride in the prompt."""
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    ULProxyProvider(default_model="gpt-5.5").structured_extract("p", SCHEMA)
+
+    body = transport["calls"][0]["body"]
+    assert "temperature" not in body
+    assert "response_format" not in body
+    # The schema still constrains the reply — via the system message.
+    assert "JSON Schema" in body["messages"][0]["content"]
+
+
+def test_other_providers_still_pin_temperature_for_repeatable_scoring(gateway, transport):
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA)
+    assert transport["calls"][0]["body"]["temperature"] == 0
+    assert "response_format" in transport["calls"][0]["body"]
+
+
+def test_an_opaque_400_is_surfaced_rather_than_blindly_retried(gateway, transport):
+    """Guessing at which parameter a gateway disliked hides the real problem;
+    the request shape is fixed at the provider, from its documented contract."""
+    transport["queue"].append(FakeResponse(400, text='{"detail":"Upstream API error: 400"}'))
+    with pytest.raises(base.LLMError, match="400"):
+        FastLLMProvider().structured_extract("p", SCHEMA)
+    assert len(transport["calls"]) == 1
 
 
 def test_a_gateway_that_rejects_response_format_falls_back_to_prompted_json(transport):

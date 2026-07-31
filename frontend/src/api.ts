@@ -163,10 +163,10 @@ export const getCorpus = () =>
     unpaired: string[];
   }>("/api/audits/corpus");
 
-export const startAudit = (screeningId: string) =>
+export const startAudit = (screeningId: string, provider?: string, model?: string) =>
   request<{ jobId: string; auditId: string; provider: string; model: string }>(
     "/api/audits",
-    json("POST", { screeningId }),
+    json("POST", { screeningId, provider, model }),
   );
 
 export const listAudits = () =>

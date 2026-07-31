@@ -818,6 +818,11 @@ def chat_actions(session_id: str, since: int = Query(default=0, ge=0)) -> dict[s
 
 class AuditStart(BaseModel):
     screeningId: str
+    # The audit page is where models get benchmarked against each other, so it
+    # picks its own provider/model rather than inheriting whatever happens to
+    # be active. Omitted means "use the active one".
+    provider: str | None = None
+    model: str | None = None
 
 
 @app.get("/api/audits/corpus")
@@ -849,11 +854,19 @@ async def start_audit(body: AuditStart) -> dict[str, Any]:
             status_code=400, detail="Pick a screening that has a confirmed qualification list"
         )
 
-    provider, provider_name, model = registry.active()
+    if body.provider or body.model:
+        provider_name = body.provider or db.get_config().get("provider")
+        if provider_name not in registry.PROVIDERS:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider_name}")
+        model = body.model or ""
+        provider = registry.get_provider(provider_name, model)
+    else:
+        provider, provider_name, model = registry.active()
+
     if not model:
-        raise HTTPException(
-            status_code=400, detail="No model is selected — choose one on the Configuration page."
-        )
+        raise HTTPException(status_code=400, detail="Choose a model to run the audit with.")
+    if not provider.is_configured():
+        raise HTTPException(status_code=400, detail=f"{provider.label} is not configured")
 
     audit_id = db.new_id()
     db.execute(

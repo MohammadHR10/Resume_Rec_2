@@ -7,18 +7,27 @@
  * read one resume against its own copy.
  */
 
-import { getAudit, getCorpus, listAudits, listScreenings, startAudit } from "./api.ts";
+import {
+  getAudit,
+  getConfig,
+  getCorpus,
+  listAudits,
+  listModels,
+  listScreenings,
+  startAudit,
+} from "./api.ts";
 import { showProgress } from "./progress.ts";
-import type { AuditComparison, AuditRun, Qualification } from "./types.ts";
+import type { AppConfig, AuditComparison, AuditRun, Qualification } from "./types.ts";
 import { busy, el, escapeHtml, formatDate, notify } from "./ui.ts";
 
 export async function renderAuditPage(root: HTMLElement): Promise<void> {
   root.innerHTML = '<div class="text-muted">Loading the audit corpus…</div>';
 
-  const [corpus, screenings, runs] = await Promise.all([
+  const [corpus, screenings, runs, config] = await Promise.all([
     getCorpus().catch(() => null),
     listScreenings().catch(() => []),
     listAudits().catch(() => []),
+    getConfig().catch(() => null),
   ]);
 
   root.innerHTML = "";
@@ -38,7 +47,7 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
   root.appendChild(corpusCard(corpus));
 
   const results = el("div");
-  root.appendChild(runnerCard(screenings, results, root));
+  root.appendChild(runnerCard(screenings, results, root, config));
   root.appendChild(results);
   root.appendChild(historyCard(runs, results));
 
@@ -91,12 +100,24 @@ function runnerCard(
   screenings: { id: string; job_title: string; qualifications: number }[],
   results: HTMLElement,
   root: HTMLElement,
+  config: AppConfig | null,
 ): HTMLElement {
   const card = el("div", "card mb-3");
   card.appendChild(el("div", "card-header fw-semibold", "Run an audit"));
   const body = el("div", "card-body");
+  body.appendChild(
+    el(
+      "p",
+      "text-muted small",
+      "Pick the model to test. This is independent of the model set on the Configuration page, so a benchmark run does not disturb an in-progress screening. Every run is stored under the model that produced it.",
+    ),
+  );
 
-  const select = el("select", "form-select mb-3") as HTMLSelectElement;
+  const row = el("div", "row g-3 mb-3");
+
+  const screeningField = el("div", "col-lg-6");
+  screeningField.appendChild(el("label", "form-label small text-muted", "Qualification list"));
+  const select = el("select", "form-select") as HTMLSelectElement;
   const usable = screenings.filter((s) => s.qualifications > 0);
   if (usable.length === 0) {
     select.innerHTML = '<option value="">No screening has qualifications yet</option>';
@@ -112,7 +133,31 @@ function runnerCard(
       select.appendChild(option);
     }
   }
-  body.appendChild(select);
+  screeningField.appendChild(select);
+
+  const providerField = el("div", "col-lg-3");
+  providerField.appendChild(el("label", "form-label small text-muted", "Source"));
+  const providerSelect = el("select", "form-select") as HTMLSelectElement;
+  for (const provider of config?.providers ?? []) {
+    const option = el(
+      "option",
+      "",
+      `${escapeHtml(provider.label)}${provider.configured ? "" : " — not configured"}`,
+    ) as HTMLOptionElement;
+    option.value = provider.name;
+    option.selected = provider.name === config?.provider;
+    option.disabled = !provider.configured;
+    providerSelect.appendChild(option);
+  }
+  providerField.appendChild(providerSelect);
+
+  const modelField = el("div", "col-lg-3");
+  modelField.appendChild(el("label", "form-label small text-muted", "Model"));
+  const modelSelect = el("select", "form-select") as HTMLSelectElement;
+  modelField.appendChild(modelSelect);
+
+  row.append(screeningField, providerField, modelField);
+  body.appendChild(row);
 
   const run = el("button", "btn btn-primary", "Run bias audit") as HTMLButtonElement;
   run.disabled = usable.length === 0;
@@ -121,10 +166,45 @@ function runnerCard(
   const progress = el("div", "mt-3 d-none");
   body.appendChild(progress);
 
+  async function loadModels(providerName: string): Promise<void> {
+    modelSelect.innerHTML = '<option value="">Loading…</option>';
+    modelSelect.disabled = true;
+    run.disabled = true;
+    try {
+      const listed = await listModels(providerName);
+      modelSelect.innerHTML = "";
+      for (const model of listed.models) {
+        const option = el("option", "", escapeHtml(model)) as HTMLOptionElement;
+        option.value = model;
+        // Preselect whatever is globally active, so the obvious next run
+        // matches what the screening itself was scored with.
+        option.selected = providerName === config?.provider && model === config?.model;
+        modelSelect.appendChild(option);
+      }
+      if (listed.models.length === 0) {
+        const manual = el("option", "", "(no models listed)") as HTMLOptionElement;
+        manual.value = "";
+        modelSelect.appendChild(manual);
+      }
+    } catch {
+      modelSelect.innerHTML = '<option value="">(could not list models)</option>';
+    } finally {
+      modelSelect.disabled = false;
+      run.disabled = usable.length === 0;
+    }
+  }
+
+  providerSelect.addEventListener("change", () => void loadModels(providerSelect.value));
+  void loadModels(providerSelect.value || config?.provider || "");
+
   run.addEventListener("click", async () => {
+    if (!modelSelect.value) {
+      notify("Choose a model to run the audit with.", "warning");
+      return;
+    }
     const done = busy(run, "Running…");
     try {
-      const started = await startAudit(select.value);
+      const started = await startAudit(select.value, providerSelect.value, modelSelect.value);
       notify(`Audit started with ${started.provider}/${started.model}.`, "info");
       showProgress(progress, started.jobId, {
         onDone: () => {
@@ -147,12 +227,30 @@ function runnerCard(
   return card;
 }
 
+/** Model comparison: one row per run, so two models are read against each
+ *  other rather than by opening each result in turn. */
 function historyCard(
-  runs: { id: string; provider: string; model: string; status: string; created_at: string }[],
+  runs: {
+    id: string;
+    provider: string;
+    model: string;
+    status: string;
+    created_at: string;
+    stageFlips: number | null;
+    meanCoverageDelta: number | null;
+    pairs: number | null;
+  }[],
   results: HTMLElement,
 ): HTMLElement {
   const card = el("div", "card mt-3");
-  card.appendChild(el("div", "card-header fw-semibold", "Previous runs"));
+  card.appendChild(
+    el(
+      "div",
+      "card-header fw-semibold d-flex justify-content-between align-items-center",
+      `<span>Model comparison</span>
+       <span class="text-muted small fw-normal">every run, newest first</span>`,
+    ),
+  );
   const body = el("div", "card-body p-0");
   if (runs.length === 0) {
     body.appendChild(el("p", "text-muted m-3", "No audits have been run yet."));
@@ -160,15 +258,32 @@ function historyCard(
     return card;
   }
 
-  const table = el("table", "table table-sm table-hover mb-0");
-  table.innerHTML = "<thead><tr><th>Run</th><th>Model</th><th>Status</th><th></th></tr></thead>";
+  const table = el("table", "table table-sm table-hover align-middle mb-0");
+  table.innerHTML = `
+    <thead><tr>
+      <th>Model</th><th>Source</th>
+      <th title="Candidates advanced or rejected differently after a disclosure">Advancement changes</th>
+      <th title="Mean absolute change in qualifications met">Mean coverage delta</th>
+      <th>Pairs</th><th>Run</th><th></th>
+    </tr></thead>`;
   const tbody = el("tbody");
   for (const run of runs) {
     const row = el("tr");
+    const flips =
+      run.stageFlips === null || run.status !== "done"
+        ? '<span class="text-muted">—</span>'
+        : run.stageFlips === 0
+          ? '<span class="badge text-bg-success">0</span>'
+          : `<span class="badge text-bg-danger">${run.stageFlips}</span>`;
     row.innerHTML = `
-      <td>${escapeHtml(formatDate(run.created_at))}</td>
-      <td><code>${escapeHtml(run.provider)}/${escapeHtml(run.model)}</code></td>
-      <td>${escapeHtml(run.status)}</td>
+      <td><code>${escapeHtml(run.model)}</code></td>
+      <td class="small text-muted">${escapeHtml(run.provider)}</td>
+      <td>${flips}</td>
+      <td>${run.meanCoverageDelta ?? "—"}</td>
+      <td>${run.pairs ?? "—"}</td>
+      <td class="small text-muted">${escapeHtml(formatDate(run.created_at))}${
+        run.status === "done" ? "" : ` · ${escapeHtml(run.status)}`
+      }</td>
       <td class="text-end"></td>`;
     const view = el("button", "btn btn-sm btn-outline-primary", "View") as HTMLButtonElement;
     view.addEventListener("click", () => void renderRun(results, run.id));
