@@ -948,7 +948,7 @@ async def start_audit(body: AuditStart) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not audit.build_pairs(audit.list_corpus(corpus_dir))[0]:
+    if not audit.load_pairs(corpus_dir)[0]:
         raise HTTPException(
             status_code=400,
             detail=(

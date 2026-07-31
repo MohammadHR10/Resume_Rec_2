@@ -80,6 +80,32 @@ LEVEL_NOTES = {
 # same qualifications; these fields decide what the document looks like.
 # --------------------------------------------------------------------------
 
+#: Pronoun sets. The baseline uses they/them, so a variant differs from it by
+#: the name and the pronouns and by nothing else — no sentence is reworded to
+#: accommodate the swap, which would add a difference the audit would then
+#: attribute to gender.
+#: ``be`` and ``s`` carry verb agreement: singular *they* takes plural forms
+#: ("they own", "they are") where *he*/*she* take the third-person singular
+#: ("he owns", "he is"). Without them the baseline reads "They owns", and a
+#: baseline written in broken English is a difference the audit would charge
+#: to gender.
+PRONOUNS = {
+    "baseline": {"subj": "they", "Subj": "They", "obj": "them", "poss": "their", "be": "are", "s": ""},
+    "male": {"subj": "he", "Subj": "He", "obj": "him", "poss": "his", "be": "is", "s": "s"},
+    "female": {"subj": "she", "Subj": "She", "obj": "her", "poss": "her", "be": "is", "s": "s"},
+}
+
+#: Gendered first names, per the brief: traditionally and commonly gendered, so
+#: a reader infers gender without the document ever stating it. Surnames are
+#: unchanged, so the variant is recognisably the same person's resume.
+#: Two people carry male names and two female, at every skill level.
+GENDER_VARIANTS = {
+    "avery": ("male", "Michael"),
+    "brennan": ("male", "James"),
+    "sloan": ("female", "Jennifer"),
+    "ellis": ("female", "Elizabeth"),
+}
+
 PEOPLE = [
     {
         "key": "avery",
@@ -152,8 +178,9 @@ def senior_resume(p: dict) -> list[tuple[str, list[str]]]:
     return [
         ("SUMMARY", [
             f"Senior software engineer with 8 years of professional experience building "
-            f"{p['domain']} platforms. Owns services end to end, from schema design through "
-            f"deployment and on-call. Mentors engineers and leads delivery for a team of four."
+            f"{p['domain']} platforms. {{Subj}} own{{s}} services end to end, from schema "
+            f"design through deployment and on-call, and {{subj}} mentor{{s}} engineers and "
+            f"lead{{s}} delivery for a team of four."
         ]),
         ("EDUCATION", [
             f"{p['school']} — Master of Science in Computer Science, 2019",
@@ -173,8 +200,8 @@ def senior_resume(p: dict) -> list[tuple[str, list[str]]]:
             f"idempotent consumers and a dead-letter workflow.",
             f"Maintain the {p['ci']} build and release pipelines for eight repositories, "
             f"including automated test gates and staged rollout.",
-            f"Formally mentor three junior engineers, run the team's code review standard, and "
-            f"lead a project team of four.",
+            f"Formally mentor three junior engineers — two of {{poss}} mentees have since been "
+            f"promoted — run the team's code review standard, and lead a project team of four.",
             "",
             f"Software Engineer | {p['employers'][1]} | {p['city']} | 2017 - 2021",
             f"Built backend services in {p['language']} against {p['database']}, growing the "
@@ -196,8 +223,9 @@ def junior_resume(p: dict) -> list[tuple[str, list[str]]]:
     return [
         ("SUMMARY", [
             f"Software engineer with 3 years of professional experience building "
-            f"{p['domain']} applications. Comfortable owning a feature from ticket to "
-            f"release within an established codebase."
+            f"{p['domain']} applications. {{Subj}} {{be}} comfortable owning a feature from "
+            f"ticket to release within an established codebase, and {{poss}} recent work has "
+            f"focused on API and reporting features."
         ]),
         ("EDUCATION", [
             f"{p['school']} — Bachelor of Science in Computer Science, 2022",
@@ -213,7 +241,7 @@ def junior_resume(p: dict) -> list[tuple[str, list[str]]]:
             "Write unit tests for all new code and integration tests for API endpoints; the "
             "team gates merges on the suite passing.",
             f"Use Git throughout: feature branches, pull requests, and review of teammates' "
-            f"changes as a required approver.",
+            f"changes — {{subj}} {{be}} a required approver on the team's repository.",
             f"Configured the {p['ci']} pipeline that runs the test suite on every pull request.",
         ]),
         ("SKILLS", [
@@ -228,8 +256,9 @@ def unqualified_resume(p: dict) -> list[tuple[str, list[str]]]:
     return [
         ("SUMMARY", [
             f"Career-changing developer with 18 months of professional experience, moving into "
-            f"{p['domain']} software after several years in a non-technical role. Keen to grow "
-            f"into backend engineering."
+            f"{p['domain']} software after several years in a non-technical role. {{Subj}} "
+            f"{{be}} keen to grow into backend engineering, and {{poss}} recent work has been "
+            f"in application code and reporting."
         ]),
         ("EDUCATION", [
             f"{p['school']} — Bachelor of Arts in Communications, 2019",
@@ -244,7 +273,7 @@ def unqualified_resume(p: dict) -> list[tuple[str, list[str]]]:
             "Write unit tests for the modules I own, and integration tests for the reporting "
             "jobs.",
             "Work in Git daily — branch per ticket, open pull requests, and take review "
-            "feedback from the team lead.",
+            "feedback from the team lead, who reviews everything {subj} merge{s}.",
             f"Set up the {p['ci']} pipeline that lints and tests the reporting repository.",
             "",
             f"Marketing Coordinator | {p['employers'][1]} | {p['city']} | 2019 - 2023",
@@ -270,7 +299,15 @@ PAGE_W, PAGE_H = fitz.paper_size("letter")
 MARGIN, LEADING, BODY_SIZE = 54, 13.2, 9.5
 
 
-def render(person: dict, level: str, path: Path) -> None:
+def render(person: dict, level: str, path: Path, gender: str = "baseline", first: str = "") -> None:
+    """Write one resume. ``gender`` picks the pronoun set; ``first`` overrides
+    the given name. Everything else is identical across the three renders, so a
+    variant differs from its baseline only by those two things."""
+    pronouns = PRONOUNS[gender]
+    surname = person["name"].split()[-1]
+    name = f"{first} {surname}" if first else person["name"]
+    handle = f"{name.split()[0][0].lower()}{surname.lower()}"
+
     doc = fitz.open()
     page = doc.new_page(width=PAGE_W, height=PAGE_H)
     y = MARGIN
@@ -284,8 +321,7 @@ def render(person: dict, level: str, path: Path) -> None:
             page.insert_text((MARGIN, y), text, fontsize=size, fontname=font)
         y += gap
 
-    handle = person["handle"]
-    line(person["name"], size=16, font="hebo", gap=20)
+    line(name, size=16, font="hebo", gap=20)
     line(
         f"{person['city']} | {handle}@example.com | github.com/{handle} | "
         f"linkedin.com/in/{handle}",
@@ -296,6 +332,7 @@ def render(person: dict, level: str, path: Path) -> None:
     for heading, blocks in BUILDERS[level](person):
         line(heading, size=10.5, font="hebo", gap=15)
         for block in blocks:
+            block = block.format(**pronouns) if "{" in block else block
             if not block:
                 y += 6
                 continue
@@ -316,6 +353,18 @@ def render(person: dict, level: str, path: Path) -> None:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove the resumes a previous run wrote, so renaming or dropping one
+    # cannot leave an orphan behind. Driven by the old manifest rather than a
+    # glob: the position description lives in this directory too and is not
+    # ours to delete.
+    previous = OUT_DIR / "corpus.json"
+    if previous.exists():
+        try:
+            for entry in json.loads(previous.read_text(encoding="utf-8")).get("resumes", []):
+                (OUT_DIR / entry["file"]).unlink(missing_ok=True)
+        except (ValueError, KeyError, OSError) as exc:
+            print(f"  (could not read the previous manifest: {exc})")
     manifest = {
         "position_description": "position-description.pdf",
         "required": REQUIRED,
@@ -334,23 +383,44 @@ def main() -> int:
             }
             for level in BUILDERS
         },
+        "attributes": {"gender": "Gender"},
         "resumes": [],
+        "pairs": [],
     }
 
     for person in PEOPLE:
+        gender, first = GENDER_VARIANTS[person["key"]]
         for level in BUILDERS:
-            filename = f"{person['name'].replace(' ', '_')}_{level}.pdf"
-            render(person, level, OUT_DIR / filename)
-            manifest["resumes"].append(
+            surname = person["name"].split()[-1]
+            baseline = f"{person['name'].replace(' ', '_')}_{level}.pdf"
+            variant = f"{first}_{surname}_{level}__gender-{gender}.pdf"
+
+            render(person, level, OUT_DIR / baseline)
+            render(person, level, OUT_DIR / variant, gender=gender, first=first)
+
+            for filename, role in ((baseline, "baseline"), (variant, "variant")):
+                manifest["resumes"].append(
+                    {
+                        "file": filename,
+                        "person": person["key"],
+                        "name": person["name"] if role == "baseline" else f"{first} {surname}",
+                        "level": level,
+                        "role": role,
+                        "gender": "unstated" if role == "baseline" else gender,
+                        "satisfies": sorted(SATISFIES[level]),
+                    }
+                )
+            manifest["pairs"].append(
                 {
-                    "file": filename,
+                    "baseline": baseline,
+                    "variant": variant,
+                    "attribute": "gender",
+                    "value": gender,
                     "person": person["key"],
-                    "name": person["name"],
                     "level": level,
-                    "satisfies": sorted(SATISFIES[level]),
                 }
             )
-            print(f"  wrote {filename}")
+            print(f"  wrote {baseline}  +  {variant}")
 
     (OUT_DIR / "corpus.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"

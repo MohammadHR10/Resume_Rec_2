@@ -567,7 +567,7 @@ def test_a_screening_can_be_built_from_a_corpus_without_any_upload(client, stub)
     against; making someone drag those same files into a browser is busywork."""
     payload = client.post("/api/audits/corpus/swe_ii_corpus/screening").json()
 
-    assert payload["candidates"] == 12
+    assert payload["candidates"] == 24
     assert payload["qualifications"]
     rows = db.query(
         "SELECT name, source_files FROM candidate WHERE screening_id=?", (payload["screeningId"],)
@@ -582,9 +582,10 @@ def test_building_a_screening_from_an_unknown_corpus_is_refused(client, stub):
     assert client.post("/api/audits/corpus/nope/screening").status_code == 400
 
 
-def test_an_audit_refuses_a_corpus_with_nothing_to_compare(client, stub):
+def test_an_audit_refuses_a_corpus_with_nothing_to_compare(client, stub, monkeypatch):
     """A pass from a corpus with no variants would be a clean bill of health
     from a test that never ran."""
+    monkeypatch.setattr(server.audit, "load_pairs", lambda _dir: ([], [], []))
     screening_id = _seed_screening(client)
     response = client.post(
         "/api/audits", json={"screeningId": screening_id, "corpus": "swe_ii_corpus"}

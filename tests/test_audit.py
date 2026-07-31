@@ -74,7 +74,7 @@ SWE_II = Path(__file__).resolve().parent.parent / "test-resumes" / "swe_ii_corpu
 def test_the_position_description_is_not_treated_as_a_candidate():
     files = [Path(p).name for p in audit.list_corpus(SWE_II)]
     assert "position-description.pdf" not in files
-    assert len(files) == 12
+    assert len(files) == 24  # 12 baselines + 12 gender variants
 
 
 def test_every_person_has_all_three_skill_levels():
@@ -111,17 +111,75 @@ def test_the_skill_levels_have_the_coverage_they_claim():
     assert levels["unqualified"]["expected_stage1"] == "fail"
 
 
-def test_a_corpus_without_variants_reports_its_resumes_as_baselines():
-    pairs, baselines, unpaired = audit.build_pairs(audit.list_corpus(SWE_II))
-    assert len(baselines) == 12, "every resume is a baseline until variants exist"
-    assert pairs == []
+def test_pairs_come_from_the_corpus_manifest():
+    """A generated corpus states which variant came from which baseline; this
+    module should not have to parse that back out of filenames."""
+    pairs, baselines, unpaired = audit.load_pairs(SWE_II)
+    assert len(baselines) == 12
+    assert len(pairs) == 12
     assert unpaired == []
+    assert {p["attribute"] for p in pairs} == {"gender"}
+
+
+def test_every_skill_level_has_two_male_and_two_female_variants():
+    pairs, _, _ = audit.load_pairs(SWE_II)
+    by_level: dict[str, list[str]] = {}
+    for pair in pairs:
+        by_level.setdefault(pair["level"], []).append(pair["attribute_label"])
+    assert set(by_level) == {"senior", "junior", "unqualified"}
+    for level, labels in by_level.items():
+        assert sorted(labels) == [
+            "Gender — female", "Gender — female",
+            "Gender — male", "Gender — male",
+        ], level
+
+
+def test_a_gender_variant_changes_only_a_handful_of_lines():
+    """A male and a female resume must be the same document otherwise.
+
+    Counting the differing lines is enough to catch a template change that
+    leaked into one and not the other; the lines themselves are checked by eye
+    when the corpus is regenerated.
+    """
+    import difflib
+    import json as _json
+
+    from backend.extraction import extract_text_from_pdf
+
+    manifest = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))
+
+    for pair in manifest["pairs"]:
+        baseline = extract_text_from_pdf(str(SWE_II / pair["baseline"])).splitlines()
+        variant = extract_text_from_pdf(str(SWE_II / pair["variant"])).splitlines()
+        assert len(baseline) == len(variant), pair["variant"]
+
+        changed = sum(
+            1
+            for line in difflib.unified_diff(baseline, variant, lineterm="", n=0)
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        # Name line, contact line, and the sentences carrying a pronoun — each
+        # of which rewraps across two or three lines when a word length
+        # changes. Anything much beyond that means something else moved.
+        assert changed <= 8, f"{pair['variant']}: {changed} lines differ"
+
+
+def test_the_baseline_pronouns_are_grammatical():
+    """Singular 'they' takes plural verb forms. A baseline reading "They owns"
+    is badly written, and that is a difference the audit would misattribute."""
+    from backend.extraction import extract_text_from_pdf
+
+    for path in audit.list_corpus(SWE_II):
+        text = " ".join(extract_text_from_pdf(path).split())
+        for broken in ("They owns", "they owns", "They is", "they is", "they mentors"):
+            assert broken not in text, f"{Path(path).name}: {broken}"
 
 
 def test_corpus_discovery_finds_both_corpora():
     found = {c["name"]: c for c in audit.describe_corpora()}
     assert {"swe_ii_corpus", "SWE_pdf"} <= set(found)
     assert found["swe_ii_corpus"]["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+    assert found["swe_ii_corpus"]["pairs"] == 12
     assert found["swe_ii_corpus"]["positionDescription"] == "position-description.pdf"
     assert found["SWE_pdf"]["pairs"] == 24
 

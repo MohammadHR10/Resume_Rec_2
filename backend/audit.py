@@ -138,6 +138,14 @@ def list_corpus(corpus_dir: Path | None = None) -> list[str]:
     )
 
 
+def load_pairs(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Pairings for a corpus, from its manifest if it has one."""
+    declared = pairs_from_manifest(corpus_dir)
+    if declared is not None:
+        return declared
+    return build_pairs(list_corpus(corpus_dir))
+
+
 def resolve_corpus(name: str | None) -> Path:
     """Map a corpus name to its directory, refusing anything outside the root."""
     if not name:
@@ -155,10 +163,14 @@ def describe_corpora() -> list[dict[str, Any]]:
         paths = list_corpus(directory)
         if not paths:
             continue
-        pairs, baselines, unpaired = build_pairs(paths)
-        by_attribute: dict[str, int] = {}
+        pairs, baselines, unpaired = load_pairs(directory)
+        # Keyed by the label the pair itself carries, so a manifest-declared
+        # corpus names its own attributes rather than being looked up in a
+        # table written for the filename-coded one.
+        by_attribute: dict[tuple[str, str], int] = {}
         for pair in pairs:
-            by_attribute[pair["attribute"]] = by_attribute.get(pair["attribute"], 0) + 1
+            key = (pair["attribute"], pair.get("attribute_label") or pair["attribute"])
+            by_attribute[key] = by_attribute.get(key, 0) + 1
 
         manifest = directory / "corpus.json"
         levels: dict[str, int] = {}
@@ -166,6 +178,10 @@ def describe_corpora() -> list[dict[str, Any]]:
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
                 for entry in data.get("resumes", []):
+                    # Baselines only: a variant is the same person at the same
+                    # level, so counting both would double every tier.
+                    if entry.get("role", "baseline") != "baseline":
+                        continue
                     levels[entry["level"]] = levels.get(entry["level"], 0) + 1
             except (ValueError, KeyError, OSError):
                 pass
@@ -183,13 +199,73 @@ def describe_corpora() -> list[dict[str, Any]]:
                 "positionDescription": description,
                 "skillLevels": levels,
                 "byAttribute": [
-                    {"attribute": k, "label": ATTRIBUTE_LABELS.get(k, k), "pairs": v}
-                    for k, v in sorted(by_attribute.items())
+                    {"attribute": attribute, "label": ATTRIBUTE_LABELS.get(attribute, label), "pairs": count}
+                    for (attribute, label), count in sorted(by_attribute.items())
                 ],
                 "unpaired": [os.path.basename(p) for p in unpaired],
             }
         )
     return out
+
+
+def pairs_from_manifest(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[str], list[str]] | None:
+    """Read pairings from a corpus's own ``corpus.json``, if it declares them.
+
+    A generated corpus knows exactly which variant came from which baseline and
+    what was injected, so it says so rather than encoding it in filenames and
+    making this module parse it back out. The filename-code path below stays for
+    the hand-built SWE_pdf corpus, which has no manifest.
+    """
+    manifest_path = corpus_dir / "corpus.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        declared = manifest.get("pairs")
+    except (ValueError, OSError) as exc:
+        logger.warning("Could not read %s: %s", manifest_path, exc)
+        return None
+    if not declared:
+        return None
+
+    present = {p.name for p in corpus_dir.glob("*.pdf")}
+    labels = manifest.get("attributes") or {}
+    pairs: list[dict[str, Any]] = []
+    unpaired: list[str] = []
+
+    for entry in declared:
+        baseline, variant = entry.get("baseline", ""), entry.get("variant", "")
+        if baseline not in present or variant not in present:
+            unpaired.append(variant or baseline)
+            continue
+        attribute = entry.get("attribute", "")
+        value = entry.get("value", "")
+        pairs.append(
+            {
+                "code": f"{entry.get('person', '')}_{entry.get('level', '')}_{value}",
+                "baseline_code": f"{entry.get('person', '')}_{entry.get('level', '')}",
+                "attribute": attribute,
+                "attribute_label": (
+                    f"{labels.get(attribute, attribute.title())} — {value}" if value
+                    else labels.get(attribute, attribute.title())
+                ),
+                "is_control": bool(entry.get("is_control")),
+                "baseline_path": str(corpus_dir / baseline),
+                "variant_path": str(corpus_dir / variant),
+                "baseline_file": baseline,
+                "variant_file": variant,
+                "level": entry.get("level", ""),
+            }
+        )
+
+    paired_variants = {p["variant_file"] for p in pairs}
+    baselines = sorted(
+        str(corpus_dir / name)
+        for name in present
+        if name not in paired_variants and not name.lower().startswith(NON_RESUME_PREFIXES)
+    )
+    pairs.sort(key=lambda p: (p["attribute_label"], p["baseline_code"]))
+    return pairs, baselines, unpaired
 
 
 def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
@@ -592,7 +668,7 @@ async def run_audit(
         if not paths:
             raise ValueError(f"no PDFs found in the audit corpus at {corpus_dir or CORPUS_DIR}")
 
-        pairs, baseline_paths, unpaired = build_pairs(paths)
+        pairs, baseline_paths, unpaired = load_pairs(corpus_dir or CORPUS_DIR)
         if not pairs:
             # Without a variant to compare against there is nothing for a
             # disclosure to change, and reporting that as a pass would be a
