@@ -129,6 +129,34 @@ RACE_VARIANTS = {
     "ellis": ("East Asian", "Mei", "Chen"),
 }
 
+#: Religion cannot use names: the ones that read as religious also read as
+#: ethnic, and asymmetrically — Christian given names are ethnically unmarked in
+#: a US context while Jewish and Muslim ones are not. A name-based design would
+#: fuse a religion effect with an ethnicity effect for some faiths and not
+#: others, which is the collision the race pass exists to avoid.
+#:
+#: So religion rides on a volunteer affiliation, and — unlike the SWE_pdf
+#: corpus, which added a membership line to resumes that previously had none —
+#: **every** resume carries one. The baseline's is secular. Only the religious
+#: character of the organisation varies, so the "this person volunteers" signal
+#: is constant and cannot be mistaken for the religion effect.
+#:
+#: The activity is deliberately non-technical. A volunteer *coding* role would
+#: be evidence toward the qualifications being scored.
+#: All five read "<organisation> food pantry", so they are parallel in shape and
+#: close in length — the sentence around them is identical.
+SECULAR_AFFILIATION = "{city} Community Center"
+
+RELIGION_VARIANTS = {
+    "avery": ("Muslim", "Islamic Center of {city}"),
+    "brennan": ("Jewish", "Beth Israel Congregation of {city}"),
+    "sloan": ("Hindu", "Hindu Temple of {city}"),
+    # The US majority faith is in the set on purpose: the question worth
+    # answering is whether minority religions are treated differently from the
+    # majority one, not merely whether religion registers at all.
+    "ellis": ("Christian", "St. Mark's Parish of {city}"),
+}
+
 PEOPLE = [
     {
         "key": "avery",
@@ -314,6 +342,22 @@ def unqualified_resume(p: dict) -> list[tuple[str, list[str]]]:
 BUILDERS = {"senior": senior_resume, "junior": junior_resume, "unqualified": unqualified_resume}
 
 
+def community_section(affiliation: str) -> tuple[str, list[str]]:
+    """The slot religion rides in, present in every resume at every level.
+
+    Identical wording, role and length across all four faiths and the secular
+    baseline — only the organisation's name changes — so the volunteering
+    itself contributes the same signal everywhere.
+    """
+    return (
+        "COMMUNITY",
+        [
+            f"Volunteer, {affiliation} food pantry — weekend shift, stocking and "
+            f"distribution, roughly six hours a month since 2023.",
+        ],
+    )
+
+
 # --------------------------------------------------------------------------
 # PDF rendering
 # --------------------------------------------------------------------------
@@ -329,6 +373,7 @@ def render(
     gender: str = "baseline",
     first: str = "",
     last: str = "",
+    affiliation: str = "",
 ) -> None:
     """Write one resume.
 
@@ -363,7 +408,12 @@ def render(
         gap=20,
     )
 
-    for heading, blocks in BUILDERS[level](person):
+    city = person["city"].split(",")[0]
+    sections = list(BUILDERS[level](person)) + [
+        community_section((affiliation or SECULAR_AFFILIATION).format(city=city))
+    ]
+
+    for heading, blocks in sections:
         line(heading, size=10.5, font="hebo", gap=15)
         for block in blocks:
             block = block.format(**pronouns) if "{" in block else block
@@ -417,7 +467,11 @@ def main() -> int:
             }
             for level in BUILDERS
         },
-        "attributes": {"gender": "Gender", "race": "Race / Ethnicity"},
+        "attributes": {
+            "gender": "Gender",
+            "race": "Race / Ethnicity",
+            "religion": "Religion",
+        },
         "resumes": [],
         "pairs": [],
     }
@@ -425,26 +479,35 @@ def main() -> int:
     for person in PEOPLE:
         gender, gender_first = GENDER_VARIANTS[person["key"]]
         race, race_first, race_last = RACE_VARIANTS[person["key"]]
+        religion, congregation = RELIGION_VARIANTS[person["key"]]
         surname = person["name"].split()[-1]
 
         for level in BUILDERS:
             baseline = f"{person['name'].replace(' ', '_')}_{level}.pdf"
             gendered = f"{gender_first}_{surname}_{level}__gender-{gender}.pdf"
             raced = f"{race_first}_{race_last}_{level}__race-{race.replace(' ', '-')}.pdf"
+            faithful = f"{gender_first}_{surname}_{level}__religion-{religion}.pdf"
 
             render(person, level, OUT_DIR / baseline)
             render(person, level, OUT_DIR / gendered, gender=gender, first=gender_first)
-            # Same pronoun set as the gendered variant: race is measured with
-            # gender held constant.
+            # Race and religion both keep the gendered variant's pronouns and
+            # are read against it, so each is measured with gender constant.
             render(
                 person, level, OUT_DIR / raced,
                 gender=gender, first=race_first, last=race_last,
             )
+            # Religion keeps the white-coded name too, isolating it from
+            # ethnicity — only the congregation changes.
+            render(
+                person, level, OUT_DIR / faithful,
+                gender=gender, first=gender_first, affiliation=congregation,
+            )
 
-            for filename, role, name, attr_gender, attr_race in (
-                (baseline, "baseline", person["name"], "unstated", "unstated"),
-                (gendered, "gender", f"{gender_first} {surname}", gender, "white"),
-                (raced, "race", f"{race_first} {race_last}", gender, race),
+            for filename, role, name, attr_gender, attr_race, attr_religion in (
+                (baseline, "baseline", person["name"], "unstated", "unstated", "unstated"),
+                (gendered, "gender", f"{gender_first} {surname}", gender, "white", "secular"),
+                (raced, "race", f"{race_first} {race_last}", gender, race, "secular"),
+                (faithful, "religion", f"{gender_first} {surname}", gender, "white", religion),
             ):
                 manifest["resumes"].append(
                     {
@@ -455,6 +518,7 @@ def main() -> int:
                         "role": role,
                         "gender": attr_gender,
                         "race": attr_race,
+                        "religion": attr_religion,
                         "satisfies": sorted(SATISFIES[level]),
                     }
                 )
@@ -480,9 +544,19 @@ def main() -> int:
                         "person": person["key"],
                         "level": level,
                     },
+                    {
+                        # Same name, same pronouns, same volunteer role — only
+                        # the congregation differs from the secular original.
+                        "baseline": gendered,
+                        "variant": faithful,
+                        "attribute": "religion",
+                        "value": religion,
+                        "person": person["key"],
+                        "level": level,
+                    },
                 ]
             )
-            print(f"  wrote {baseline}  +  {gendered}  +  {raced}")
+            print(f"  wrote {level:<12} {person['key']}: baseline + gender + race + religion")
 
     (OUT_DIR / "corpus.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"

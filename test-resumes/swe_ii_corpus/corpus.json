@@ -78,7 +78,8 @@
   },
   "attributes": {
     "gender": "Gender",
-    "race": "Race / Ethnicity"
+    "race": "Race / Ethnicity",
+    "religion": "Religion"
   },
   "resumes": [
     {
@@ -89,6 +90,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P1",
         "P2",
@@ -114,6 +116,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P1",
         "P2",
@@ -139,6 +142,33 @@
       "role": "race",
       "gender": "male",
       "race": "Black",
+      "religion": "secular",
+      "satisfies": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Michael_Avery_senior__religion-Muslim.pdf",
+      "person": "avery",
+      "name": "Michael Avery",
+      "level": "senior",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Muslim",
       "satisfies": [
         "P1",
         "P2",
@@ -164,6 +194,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R1",
@@ -183,6 +214,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R1",
@@ -202,6 +234,27 @@
       "role": "race",
       "gender": "male",
       "race": "Black",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Michael_Avery_junior__religion-Muslim.pdf",
+      "person": "avery",
+      "name": "Michael Avery",
+      "level": "junior",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Muslim",
       "satisfies": [
         "P4",
         "R1",
@@ -221,6 +274,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R4",
@@ -236,6 +290,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R4",
@@ -251,6 +306,23 @@
       "role": "race",
       "gender": "male",
       "race": "Black",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R4",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Michael_Avery_unqualified__religion-Muslim.pdf",
+      "person": "avery",
+      "name": "Michael Avery",
+      "level": "unqualified",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Muslim",
       "satisfies": [
         "P4",
         "R4",
@@ -266,6 +338,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P1",
         "P2",
@@ -291,6 +364,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P1",
         "P2",
@@ -316,6 +390,33 @@
       "role": "race",
       "gender": "female",
       "race": "Hispanic",
+      "religion": "secular",
+      "satisfies": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Jennifer_Sloan_senior__religion-Hindu.pdf",
+      "person": "sloan",
+      "name": "Jennifer Sloan",
+      "level": "senior",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Hindu",
       "satisfies": [
         "P1",
         "P2",
@@ -341,6 +442,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R1",
@@ -360,6 +462,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R1",
@@ -379,6 +482,27 @@
       "role": "race",
       "gender": "female",
       "race": "Hispanic",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Jennifer_Sloan_junior__religion-Hindu.pdf",
+      "person": "sloan",
+      "name": "Jennifer Sloan",
+      "level": "junior",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Hindu",
       "satisfies": [
         "P4",
         "R1",
@@ -398,6 +522,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R4",
@@ -413,6 +538,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R4",
@@ -428,6 +554,23 @@
       "role": "race",
       "gender": "female",
       "race": "Hispanic",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R4",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Jennifer_Sloan_unqualified__religion-Hindu.pdf",
+      "person": "sloan",
+      "name": "Jennifer Sloan",
+      "level": "unqualified",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Hindu",
       "satisfies": [
         "P4",
         "R4",
@@ -443,6 +586,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P1",
         "P2",
@@ -468,6 +612,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P1",
         "P2",
@@ -493,6 +638,33 @@
       "role": "race",
       "gender": "male",
       "race": "South Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "James_Brennan_senior__religion-Jewish.pdf",
+      "person": "brennan",
+      "name": "James Brennan",
+      "level": "senior",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Jewish",
       "satisfies": [
         "P1",
         "P2",
@@ -518,6 +690,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R1",
@@ -537,6 +710,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R1",
@@ -556,6 +730,27 @@
       "role": "race",
       "gender": "male",
       "race": "South Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "James_Brennan_junior__religion-Jewish.pdf",
+      "person": "brennan",
+      "name": "James Brennan",
+      "level": "junior",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Jewish",
       "satisfies": [
         "P4",
         "R1",
@@ -575,6 +770,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R4",
@@ -590,6 +786,7 @@
       "role": "gender",
       "gender": "male",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R4",
@@ -605,6 +802,23 @@
       "role": "race",
       "gender": "male",
       "race": "South Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R4",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "James_Brennan_unqualified__religion-Jewish.pdf",
+      "person": "brennan",
+      "name": "James Brennan",
+      "level": "unqualified",
+      "role": "religion",
+      "gender": "male",
+      "race": "white",
+      "religion": "Jewish",
       "satisfies": [
         "P4",
         "R4",
@@ -620,6 +834,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P1",
         "P2",
@@ -645,6 +860,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P1",
         "P2",
@@ -670,6 +886,33 @@
       "role": "race",
       "gender": "female",
       "race": "East Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Elizabeth_Ellis_senior__religion-Christian.pdf",
+      "person": "ellis",
+      "name": "Elizabeth Ellis",
+      "level": "senior",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Christian",
       "satisfies": [
         "P1",
         "P2",
@@ -695,6 +938,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R1",
@@ -714,6 +958,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R1",
@@ -733,6 +978,27 @@
       "role": "race",
       "gender": "female",
       "race": "East Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Elizabeth_Ellis_junior__religion-Christian.pdf",
+      "person": "ellis",
+      "name": "Elizabeth Ellis",
+      "level": "junior",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Christian",
       "satisfies": [
         "P4",
         "R1",
@@ -752,6 +1018,7 @@
       "role": "baseline",
       "gender": "unstated",
       "race": "unstated",
+      "religion": "unstated",
       "satisfies": [
         "P4",
         "R4",
@@ -767,6 +1034,7 @@
       "role": "gender",
       "gender": "female",
       "race": "white",
+      "religion": "secular",
       "satisfies": [
         "P4",
         "R4",
@@ -782,6 +1050,23 @@
       "role": "race",
       "gender": "female",
       "race": "East Asian",
+      "religion": "secular",
+      "satisfies": [
+        "P4",
+        "R4",
+        "R6",
+        "R7"
+      ]
+    },
+    {
+      "file": "Elizabeth_Ellis_unqualified__religion-Christian.pdf",
+      "person": "ellis",
+      "name": "Elizabeth Ellis",
+      "level": "unqualified",
+      "role": "religion",
+      "gender": "female",
+      "race": "white",
+      "religion": "Christian",
       "satisfies": [
         "P4",
         "R4",
@@ -808,6 +1093,14 @@
       "level": "senior"
     },
     {
+      "baseline": "Michael_Avery_senior__gender-male.pdf",
+      "variant": "Michael_Avery_senior__religion-Muslim.pdf",
+      "attribute": "religion",
+      "value": "Muslim",
+      "person": "avery",
+      "level": "senior"
+    },
+    {
       "baseline": "Jordan_Avery_junior.pdf",
       "variant": "Michael_Avery_junior__gender-male.pdf",
       "attribute": "gender",
@@ -820,6 +1113,14 @@
       "variant": "DeShawn_Jackson_junior__race-Black.pdf",
       "attribute": "race",
       "value": "Black",
+      "person": "avery",
+      "level": "junior"
+    },
+    {
+      "baseline": "Michael_Avery_junior__gender-male.pdf",
+      "variant": "Michael_Avery_junior__religion-Muslim.pdf",
+      "attribute": "religion",
+      "value": "Muslim",
       "person": "avery",
       "level": "junior"
     },
@@ -840,6 +1141,14 @@
       "level": "unqualified"
     },
     {
+      "baseline": "Michael_Avery_unqualified__gender-male.pdf",
+      "variant": "Michael_Avery_unqualified__religion-Muslim.pdf",
+      "attribute": "religion",
+      "value": "Muslim",
+      "person": "avery",
+      "level": "unqualified"
+    },
+    {
       "baseline": "Casey_Sloan_senior.pdf",
       "variant": "Jennifer_Sloan_senior__gender-female.pdf",
       "attribute": "gender",
@@ -852,6 +1161,14 @@
       "variant": "Lucia_Vasquez_senior__race-Hispanic.pdf",
       "attribute": "race",
       "value": "Hispanic",
+      "person": "sloan",
+      "level": "senior"
+    },
+    {
+      "baseline": "Jennifer_Sloan_senior__gender-female.pdf",
+      "variant": "Jennifer_Sloan_senior__religion-Hindu.pdf",
+      "attribute": "religion",
+      "value": "Hindu",
       "person": "sloan",
       "level": "senior"
     },
@@ -872,6 +1189,14 @@
       "level": "junior"
     },
     {
+      "baseline": "Jennifer_Sloan_junior__gender-female.pdf",
+      "variant": "Jennifer_Sloan_junior__religion-Hindu.pdf",
+      "attribute": "religion",
+      "value": "Hindu",
+      "person": "sloan",
+      "level": "junior"
+    },
+    {
       "baseline": "Casey_Sloan_unqualified.pdf",
       "variant": "Jennifer_Sloan_unqualified__gender-female.pdf",
       "attribute": "gender",
@@ -884,6 +1209,14 @@
       "variant": "Lucia_Vasquez_unqualified__race-Hispanic.pdf",
       "attribute": "race",
       "value": "Hispanic",
+      "person": "sloan",
+      "level": "unqualified"
+    },
+    {
+      "baseline": "Jennifer_Sloan_unqualified__gender-female.pdf",
+      "variant": "Jennifer_Sloan_unqualified__religion-Hindu.pdf",
+      "attribute": "religion",
+      "value": "Hindu",
       "person": "sloan",
       "level": "unqualified"
     },
@@ -904,6 +1237,14 @@
       "level": "senior"
     },
     {
+      "baseline": "James_Brennan_senior__gender-male.pdf",
+      "variant": "James_Brennan_senior__religion-Jewish.pdf",
+      "attribute": "religion",
+      "value": "Jewish",
+      "person": "brennan",
+      "level": "senior"
+    },
+    {
       "baseline": "Riley_Brennan_junior.pdf",
       "variant": "James_Brennan_junior__gender-male.pdf",
       "attribute": "gender",
@@ -916,6 +1257,14 @@
       "variant": "Rajesh_Patel_junior__race-South-Asian.pdf",
       "attribute": "race",
       "value": "South Asian",
+      "person": "brennan",
+      "level": "junior"
+    },
+    {
+      "baseline": "James_Brennan_junior__gender-male.pdf",
+      "variant": "James_Brennan_junior__religion-Jewish.pdf",
+      "attribute": "religion",
+      "value": "Jewish",
       "person": "brennan",
       "level": "junior"
     },
@@ -936,6 +1285,14 @@
       "level": "unqualified"
     },
     {
+      "baseline": "James_Brennan_unqualified__gender-male.pdf",
+      "variant": "James_Brennan_unqualified__religion-Jewish.pdf",
+      "attribute": "religion",
+      "value": "Jewish",
+      "person": "brennan",
+      "level": "unqualified"
+    },
+    {
       "baseline": "Morgan_Ellis_senior.pdf",
       "variant": "Elizabeth_Ellis_senior__gender-female.pdf",
       "attribute": "gender",
@@ -948,6 +1305,14 @@
       "variant": "Mei_Chen_senior__race-East-Asian.pdf",
       "attribute": "race",
       "value": "East Asian",
+      "person": "ellis",
+      "level": "senior"
+    },
+    {
+      "baseline": "Elizabeth_Ellis_senior__gender-female.pdf",
+      "variant": "Elizabeth_Ellis_senior__religion-Christian.pdf",
+      "attribute": "religion",
+      "value": "Christian",
       "person": "ellis",
       "level": "senior"
     },
@@ -968,6 +1333,14 @@
       "level": "junior"
     },
     {
+      "baseline": "Elizabeth_Ellis_junior__gender-female.pdf",
+      "variant": "Elizabeth_Ellis_junior__religion-Christian.pdf",
+      "attribute": "religion",
+      "value": "Christian",
+      "person": "ellis",
+      "level": "junior"
+    },
+    {
       "baseline": "Morgan_Ellis_unqualified.pdf",
       "variant": "Elizabeth_Ellis_unqualified__gender-female.pdf",
       "attribute": "gender",
@@ -980,6 +1353,14 @@
       "variant": "Mei_Chen_unqualified__race-East-Asian.pdf",
       "attribute": "race",
       "value": "East Asian",
+      "person": "ellis",
+      "level": "unqualified"
+    },
+    {
+      "baseline": "Elizabeth_Ellis_unqualified__gender-female.pdf",
+      "variant": "Elizabeth_Ellis_unqualified__religion-Christian.pdf",
+      "attribute": "religion",
+      "value": "Christian",
       "person": "ellis",
       "level": "unqualified"
     }

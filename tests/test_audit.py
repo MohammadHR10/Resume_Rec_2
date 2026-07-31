@@ -74,8 +74,8 @@ SWE_II = Path(__file__).resolve().parent.parent / "test-resumes" / "swe_ii_corpu
 def test_the_position_description_is_not_treated_as_a_candidate():
     files = [Path(p).name for p in audit.list_corpus(SWE_II)]
     assert "position-description.pdf" not in files
-    # 4 people x 3 levels x (baseline + gender variant + race variant)
-    assert len(files) == 36
+    # 4 people x 3 levels x (baseline + gender + race + religion)
+    assert len(files) == 48
 
 
 def test_every_person_has_all_three_skill_levels():
@@ -117,9 +117,9 @@ def test_pairs_come_from_the_corpus_manifest():
     module should not have to parse that back out of filenames."""
     pairs, baselines, unpaired = audit.load_pairs(SWE_II)
     assert len(baselines) == 12, "the unmarked resumes"
-    assert len(pairs) == 24, "12 gender + 12 race"
+    assert len(pairs) == 36, "12 gender + 12 race + 12 religion"
     assert unpaired == []
-    assert {p["attribute"] for p in pairs} == {"gender", "race"}
+    assert {p["attribute"] for p in pairs} == {"gender", "race", "religion"}
 
 
 def test_every_skill_level_has_two_male_and_two_female_variants():
@@ -168,6 +168,62 @@ def test_a_race_variant_is_compared_against_the_same_gender():
     for pair in race_pairs:
         assert "gender-" in pair["baseline"], "a race variant reads against the gendered resume"
         assert gender_of[pair["baseline"]] == gender_of[pair["variant"]], pair["variant"]
+
+
+def test_every_skill_level_covers_all_four_religions():
+    pairs, _, _ = audit.load_pairs(SWE_II)
+    by_level: dict[str, list[str]] = {}
+    for pair in pairs:
+        if pair["attribute"] != "religion":
+            continue
+        by_level.setdefault(pair["level"], []).append(pair["attribute_label"])
+    assert set(by_level) == {"senior", "junior", "unqualified"}
+    for level, labels in by_level.items():
+        assert sorted(labels) == [
+            "Religion — Christian",
+            "Religion — Hindu",
+            "Religion — Jewish",
+            "Religion — Muslim",
+        ], level
+
+
+def test_every_resume_carries_a_volunteer_line():
+    """Religion rides on the affiliation, so the volunteering itself must be
+    constant — otherwise 'this person volunteers' is read as the religion
+    effect. The baseline's affiliation is secular, not absent."""
+    from backend.extraction import extract_text_from_pdf
+
+    for path in audit.list_corpus(SWE_II):
+        text = extract_text_from_pdf(path)
+        assert "COMMUNITY" in text, Path(path).name
+        assert "food pantry" in text, Path(path).name
+
+
+def test_the_volunteer_role_is_not_technical():
+    """A volunteer *coding* role would be evidence toward the qualifications
+    being scored, and would move verdicts for reasons unrelated to religion."""
+    from backend.extraction import extract_text_from_pdf
+
+    text = extract_text_from_pdf(str(SWE_II / "Jordan_Avery_senior.pdf"))
+    community = text[text.find("COMMUNITY"):]
+    for technical in ("Python", "API", "website", "developer", "code", "database"):
+        assert technical.lower() not in community.lower()
+
+
+def test_a_religion_variant_keeps_the_white_coded_name():
+    """Religion is isolated from ethnicity: only the congregation changes, so
+    a religion effect cannot be a name effect wearing a different hat."""
+    import json as _json
+
+    manifest = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))
+    name_of = {r["file"]: r["name"] for r in manifest["resumes"]}
+    race_of = {r["file"]: r["race"] for r in manifest["resumes"]}
+
+    religion_pairs = [p for p in manifest["pairs"] if p["attribute"] == "religion"]
+    assert religion_pairs
+    for pair in religion_pairs:
+        assert name_of[pair["baseline"]] == name_of[pair["variant"]], pair["variant"]
+        assert race_of[pair["variant"]] == "white"
 
 
 def test_no_race_variant_carries_a_religion_signal():
@@ -226,7 +282,7 @@ def test_corpus_discovery_finds_both_corpora():
     found = {c["name"]: c for c in audit.describe_corpora()}
     assert {"swe_ii_corpus", "SWE_pdf"} <= set(found)
     assert found["swe_ii_corpus"]["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
-    assert found["swe_ii_corpus"]["pairs"] == 24
+    assert found["swe_ii_corpus"]["pairs"] == 36
     assert found["swe_ii_corpus"]["positionDescription"] == "position-description.pdf"
     assert found["SWE_pdf"]["pairs"] == 24
 
