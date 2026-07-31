@@ -77,6 +77,11 @@ export async function parseJobDescription(id: string, file: File) {
   }>(`/api/screenings/${id}/parse-jd`, { method: "POST", body: form });
 }
 
+export const getQualifications = (id: string) =>
+  request<{ qualifications: Qualification[]; confirmed: boolean }>(
+    `/api/screenings/${id}/qualifications`,
+  );
+
 export const saveQualifications = (
   id: string,
   qualifications: { text: string; kind: string }[],
@@ -153,20 +158,30 @@ export const chatActions = (sessionId: string, since: number) =>
 
 // -- bias audit -------------------------------------------------------------
 
-export const getCorpus = () =>
-  request<{
-    directory: string;
-    files: number;
-    baselines: number;
-    pairs: number;
-    byAttribute: { attribute: string; label: string; pairs: number }[];
-    unpaired: string[];
-  }>("/api/audits/corpus");
+export interface Corpus {
+  name: string;
+  isDefault: boolean;
+  files: number;
+  baselines: number;
+  pairs: number;
+  positionDescription: string;
+  skillLevels: Record<string, number>;
+  byAttribute: { attribute: string; label: string; pairs: number }[];
+  unpaired: string[];
+}
 
-export const startAudit = (screeningId: string, provider?: string, model?: string) =>
-  request<{ jobId: string; auditId: string; provider: string; model: string }>(
+export const getCorpus = () =>
+  request<{ root: string; corpora: Corpus[] }>("/api/audits/corpus");
+
+export const startAudit = (
+  screeningId: string,
+  provider?: string,
+  model?: string,
+  corpus?: string,
+) =>
+  request<{ jobId: string; auditId: string; provider: string; model: string; corpus: string }>(
     "/api/audits",
-    json("POST", { screeningId, provider, model }),
+    json("POST", { screeningId, provider, model, corpus }),
   );
 
 export const listAudits = () =>

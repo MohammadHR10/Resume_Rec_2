@@ -548,11 +548,36 @@ def test_chat_rejects_an_empty_question(client, stub):
 # Audit endpoints
 # ---------------------------------------------------------------------------
 
-def test_corpus_endpoint_reports_the_pairing(client):
-    payload = client.get("/api/audits/corpus").json()
-    assert payload["files"] == 34
-    assert payload["pairs"] == 24
-    assert {a["attribute"] for a in payload["byAttribute"]} == {"G", "R", "RA", "control"}
+def test_corpus_endpoint_lists_every_corpus(client):
+    corpora = {c["name"]: c for c in client.get("/api/audits/corpus").json()["corpora"]}
+    assert {"swe_ii_corpus", "SWE_pdf"} <= set(corpora)
+
+    old = corpora["SWE_pdf"]
+    assert old["files"] == 34 and old["pairs"] == 24
+    assert {a["attribute"] for a in old["byAttribute"]} == {"G", "R", "RA", "control"}
+
+    new = corpora["swe_ii_corpus"]
+    assert new["isDefault"] is True
+    assert new["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+
+
+def test_an_audit_refuses_a_corpus_with_nothing_to_compare(client, stub):
+    """A pass from a corpus with no variants would be a clean bill of health
+    from a test that never ran."""
+    screening_id = _seed_screening(client)
+    response = client.post(
+        "/api/audits", json={"screeningId": screening_id, "corpus": "swe_ii_corpus"}
+    )
+    assert response.status_code == 400
+    assert "no baseline/variant pairs" in response.json()["detail"]
+
+
+def test_an_audit_rejects_a_corpus_outside_the_corpus_root(client, stub):
+    screening_id = _seed_screening(client)
+    response = client.post(
+        "/api/audits", json={"screeningId": screening_id, "corpus": "../backend"}
+    )
+    assert response.status_code == 400
 
 
 def test_an_audit_can_name_its_own_model(client, stub, monkeypatch):
@@ -568,7 +593,8 @@ def test_an_audit_can_name_its_own_model(client, stub, monkeypatch):
 
     response = client.post(
         "/api/audits",
-        json={"screeningId": screening_id, "provider": "ulproxy", "model": "gpt-5.4-mini"},
+        json={"screeningId": screening_id, "provider": "ulproxy", "model": "gpt-5.4-mini",
+              "corpus": "SWE_pdf"},
     )
     assert response.status_code == 200
     assert response.json()["model"] == "gpt-5.4-mini"
@@ -583,14 +609,17 @@ def test_an_audit_falls_back_to_the_active_model(client, stub, monkeypatch):
 
     monkeypatch.setattr(server.audit, "run_audit", noop)
     screening_id = _seed_screening(client)
-    response = client.post("/api/audits", json={"screeningId": screening_id})
+    response = client.post(
+        "/api/audits", json={"screeningId": screening_id, "corpus": "SWE_pdf"}
+    )
     assert response.json()["model"] == "stub-model"
 
 
 def test_an_audit_rejects_an_unknown_provider(client, stub):
     screening_id = _seed_screening(client)
     response = client.post(
-        "/api/audits", json={"screeningId": screening_id, "provider": "nope", "model": "x"}
+        "/api/audits",
+        json={"screeningId": screening_id, "provider": "nope", "model": "x", "corpus": "SWE_pdf"},
     )
     assert response.status_code == 400
 

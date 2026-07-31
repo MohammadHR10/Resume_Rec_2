@@ -11,11 +11,14 @@ import {
   getAudit,
   getConfig,
   getCorpus,
+  getQualifications,
   listAudits,
   listModels,
   listScreenings,
   startAudit,
+  type Corpus,
 } from "./api.ts";
+import { JdIntake } from "./jdIntake.ts";
 import { showProgress } from "./progress.ts";
 import type { AppConfig, AuditComparison, AuditRun, Qualification } from "./types.ts";
 import { busy, el, escapeHtml, formatDate, notify } from "./ui.ts";
@@ -40,14 +43,13 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
     ),
   );
 
-  if (!corpus) {
-    notify("The audit corpus could not be read.", "danger");
+  if (!corpus || corpus.corpora.length === 0) {
+    notify("No audit corpus could be read.", "danger");
     return;
   }
-  root.appendChild(corpusCard(corpus));
 
   const results = el("div");
-  root.appendChild(runnerCard(screenings, results, root, config));
+  root.appendChild(runnerCard(screenings, results, root, config, corpus.corpora));
   root.appendChild(results);
   root.appendChild(historyCard(runs, results));
 
@@ -56,44 +58,69 @@ export async function renderAuditPage(root: HTMLElement): Promise<void> {
   }
 }
 
-function corpusCard(corpus: {
-  directory: string;
-  files: number;
-  baselines: number;
-  pairs: number;
-  byAttribute: { attribute: string; label: string; pairs: number }[];
-  unpaired: string[];
-}): HTMLElement {
-  const card = el("div", "card mb-3");
-  card.appendChild(el("div", "card-header fw-semibold", "Corpus"));
-  const body = el("div", "card-body");
-  body.appendChild(
+/** What the selected corpus contains, and whether it can support an audit. */
+function corpusSummary(corpus: Corpus): HTMLElement {
+  const panel = el("div", "border rounded p-3 bg-body-tertiary");
+
+  const levels = Object.entries(corpus.skillLevels);
+  panel.appendChild(
     el(
       "p",
       "mb-2",
-      `${corpus.files} resumes: ${corpus.baselines} originals and ${corpus.pairs} comparisons.`,
+      `<strong>${escapeHtml(corpus.name)}</strong> — ${corpus.files} resumes` +
+        (corpus.pairs > 0 ? `, ${corpus.pairs} baseline/variant comparisons` : "") +
+        (corpus.positionDescription
+          ? ` · ships its own position description (<code>${escapeHtml(corpus.positionDescription)}</code>)`
+          : ""),
     ),
   );
-  const chips = el("div", "d-flex flex-wrap gap-2");
-  for (const entry of corpus.byAttribute) {
-    chips.appendChild(
+
+  if (levels.length) {
+    const chips = el("div", "d-flex flex-wrap gap-2 mb-2");
+    for (const [level, count] of levels) {
+      chips.appendChild(
+        el("span", "badge text-bg-info", `${escapeHtml(level)}: ${count}`),
+      );
+    }
+    panel.appendChild(chips);
+    panel.appendChild(
       el(
-        "span",
-        entry.attribute === "control" ? "badge text-bg-secondary" : "badge text-bg-primary",
-        `${escapeHtml(entry.label)}: ${entry.pairs}`,
+        "p",
+        "text-muted small mb-0",
+        "Skill levels are built in, so the expected outcome is known before the model runs: seniors and juniors should clear stage 1, unqualified candidates should not.",
       ),
     );
   }
-  body.appendChild(chips);
-  body.appendChild(
-    el(
-      "p",
-      "text-muted small mb-0 mt-2",
-      "Controls are pairs where the added sentence discloses nothing. They show how much the score moves for no reason at all — the yardstick for everything else.",
-    ),
-  );
-  card.appendChild(body);
-  return card;
+
+  if (corpus.byAttribute.length) {
+    const chips = el("div", "d-flex flex-wrap gap-2 mb-2");
+    for (const entry of corpus.byAttribute) {
+      chips.appendChild(
+        el(
+          "span",
+          entry.attribute === "control" ? "badge text-bg-secondary" : "badge text-bg-primary",
+          `${escapeHtml(entry.label)}: ${entry.pairs}`,
+        ),
+      );
+    }
+    panel.appendChild(chips);
+    panel.appendChild(
+      el(
+        "p",
+        "text-muted small mb-0",
+        "Controls are pairs where the added sentence discloses nothing — the yardstick for everything else.",
+      ),
+    );
+  } else {
+    panel.appendChild(
+      el(
+        "div",
+        "alert alert-warning small mb-0 mt-2",
+        "<strong>No comparison pairs yet.</strong> This corpus has baseline resumes but no protected-class variants, so a bias audit would have nothing to compare. Use it to check that the screening scores each skill level as designed; generate variants before auditing it.",
+      ),
+    );
+  }
+  return panel;
 }
 
 function runnerCard(
@@ -101,6 +128,7 @@ function runnerCard(
   results: HTMLElement,
   root: HTMLElement,
   config: AppConfig | null,
+  corpora: Corpus[],
 ): HTMLElement {
   const card = el("div", "card mb-3");
   card.appendChild(el("div", "card-header fw-semibold", "Run an audit"));
@@ -109,9 +137,38 @@ function runnerCard(
     el(
       "p",
       "text-muted small",
-      "Pick the model to test. This is independent of the model set on the Configuration page, so a benchmark run does not disturb an in-progress screening. Every run is stored under the model that produced it.",
+      "Pick the corpus and the model to test. The model here is independent of the one set on the Configuration page, so a benchmark run does not disturb an in-progress screening. Every run is stored under the corpus and model that produced it.",
     ),
   );
+
+  const corpusRow = el("div", "row g-3 mb-3");
+  const corpusField = el("div", "col-lg-6");
+  corpusField.appendChild(el("label", "form-label small text-muted", "Corpus"));
+  const corpusSelect = el("select", "form-select") as HTMLSelectElement;
+  for (const entry of corpora) {
+    const option = el(
+      "option",
+      "",
+      `${escapeHtml(entry.name)}${entry.isDefault ? " (default)" : ""} — ${entry.files} resumes, ${entry.pairs} comparisons`,
+    ) as HTMLOptionElement;
+    option.value = entry.name;
+    option.selected = entry.isDefault;
+    corpusSelect.appendChild(option);
+  }
+  corpusField.appendChild(corpusSelect);
+  corpusRow.appendChild(corpusField);
+  body.appendChild(corpusRow);
+
+  const summaryHost = el("div", "mb-3");
+  body.appendChild(summaryHost);
+
+  function paintCorpus(): Corpus {
+    const chosen = corpora.find((c) => c.name === corpusSelect.value) ?? corpora[0];
+    summaryHost.innerHTML = "";
+    summaryHost.appendChild(corpusSummary(chosen));
+    return chosen;
+  }
+  let selectedCorpus = paintCorpus();
 
   const row = el("div", "row g-3 mb-3");
 
@@ -159,12 +216,65 @@ function runnerCard(
   row.append(screeningField, providerField, modelField);
   body.appendChild(row);
 
+  // The position description drives every verdict, so it is inspectable and
+  // editable here exactly as it is during screening — same component, same
+  // save path — rather than requiring a trip to the screening page.
+  const checklistHost = el("div", "mb-3");
+  body.appendChild(checklistHost);
+
+  function paintChecklist(): void {
+    checklistHost.innerHTML = "";
+    const screeningId = select.value;
+    if (!screeningId) return;
+
+    const details = el("details", "border rounded p-2");
+    details.appendChild(
+      el(
+        "summary",
+        "fw-semibold small",
+        "Position description — required and preferred qualifications (click to view and edit)",
+      ),
+    );
+    const inner = el("div", "pt-3");
+    details.appendChild(inner);
+    checklistHost.appendChild(details);
+
+    details.addEventListener(
+      "toggle",
+      () => {
+        if (!details.open || inner.dataset.loaded) return;
+        inner.dataset.loaded = "1";
+        inner.innerHTML = '<div class="text-muted small">Loading…</div>';
+        void getQualifications(screeningId)
+          .then((payload) => {
+            inner.innerHTML = "";
+            const intake = new JdIntake(inner, screeningId, () => {
+              notify("Qualification list saved — the next audit run uses it.", "success");
+            });
+            intake.load(payload.qualifications, payload.confirmed);
+          })
+          .catch((error) => {
+            inner.innerHTML = "";
+            notify(`Could not load the qualification list: ${(error as Error).message}`, "danger");
+          });
+      },
+    );
+  }
+  select.addEventListener("change", paintChecklist);
+  paintChecklist();
+
   const run = el("button", "btn btn-primary", "Run bias audit") as HTMLButtonElement;
   run.disabled = usable.length === 0;
   body.appendChild(run);
 
   const progress = el("div", "mt-3 d-none");
   body.appendChild(progress);
+
+  corpusSelect.addEventListener("change", () => {
+    selectedCorpus = paintCorpus();
+    updateRunState();
+  });
+  updateRunState();
 
   async function loadModels(providerName: string): Promise<void> {
     modelSelect.innerHTML = '<option value="">Loading…</option>';
@@ -190,8 +300,20 @@ function runnerCard(
       modelSelect.innerHTML = '<option value="">(could not list models)</option>';
     } finally {
       modelSelect.disabled = false;
-      run.disabled = usable.length === 0;
+      updateRunState();
     }
+  }
+
+  /** One place decides whether a run is possible; several things can veto it,
+   *  and each of them used to overwrite the others' answer. */
+  function updateRunState(): void {
+    const noPairs = selectedCorpus.pairs === 0;
+    run.disabled = usable.length === 0 || noPairs;
+    run.title = noPairs
+      ? `The ${selectedCorpus.name} corpus has no baseline/variant pairs to compare`
+      : usable.length === 0
+        ? "No screening has a qualification list yet"
+        : "";
   }
 
   providerSelect.addEventListener("change", () => void loadModels(providerSelect.value));
@@ -204,7 +326,12 @@ function runnerCard(
     }
     const done = busy(run, "Running…");
     try {
-      const started = await startAudit(select.value, providerSelect.value, modelSelect.value);
+      const started = await startAudit(
+        select.value,
+        providerSelect.value,
+        modelSelect.value,
+        corpusSelect.value,
+      );
       notify(`Audit started with ${started.provider}/${started.model}.`, "info");
       showProgress(progress, started.jobId, {
         onDone: () => {

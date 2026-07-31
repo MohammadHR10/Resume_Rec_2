@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from backend import audit, db
 
 CORPUS = Path(__file__).resolve().parent.parent / "test-resumes" / "SWE_pdf"
@@ -61,6 +63,75 @@ def test_stripping_leaves_ordinary_text_alone():
 # ---------------------------------------------------------------------------
 # Pairing over the real corpus
 # ---------------------------------------------------------------------------
+
+SWE_II = Path(__file__).resolve().parent.parent / "test-resumes" / "swe_ii_corpus"
+
+
+# ---------------------------------------------------------------------------
+# The purpose-built corpus
+# ---------------------------------------------------------------------------
+
+def test_the_position_description_is_not_treated_as_a_candidate():
+    files = [Path(p).name for p in audit.list_corpus(SWE_II)]
+    assert "position-description.pdf" not in files
+    assert len(files) == 12
+
+
+def test_every_person_has_all_three_skill_levels():
+    import json as _json
+
+    manifest = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))
+    by_person: dict[str, set] = {}
+    for entry in manifest["resumes"]:
+        by_person.setdefault(entry["person"], set()).add(entry["level"])
+    assert len(by_person) == 4
+    assert all(levels == {"senior", "junior", "unqualified"} for levels in by_person.values())
+
+
+def test_the_skill_levels_have_the_coverage_they_claim():
+    """The corpus is only trustworthy if its expected outcome is a fact about
+    the documents rather than an opinion."""
+    import json as _json
+
+    levels = _json.loads((SWE_II / "corpus.json").read_text(encoding="utf-8"))["levels"]
+
+    assert levels["senior"]["required_met"] == levels["senior"]["required_total"]
+    assert levels["senior"]["preferred_met"] == levels["senior"]["preferred_total"]
+    assert levels["senior"]["expected_stage1"] == "pass"
+
+    # Junior clears every required bar and little else — it must still pass,
+    # because stage 1 gates on required qualifications alone.
+    assert levels["junior"]["required_met"] == levels["junior"]["required_total"]
+    assert levels["junior"]["preferred_met"] == 1
+    assert levels["junior"]["expected_stage1"] == "pass"
+
+    # Unqualified holds some of both, all of neither.
+    assert 0 < levels["unqualified"]["required_met"] < levels["unqualified"]["required_total"]
+    assert 0 < levels["unqualified"]["preferred_met"] < levels["unqualified"]["preferred_total"]
+    assert levels["unqualified"]["expected_stage1"] == "fail"
+
+
+def test_a_corpus_without_variants_reports_its_resumes_as_baselines():
+    pairs, baselines, unpaired = audit.build_pairs(audit.list_corpus(SWE_II))
+    assert len(baselines) == 12, "every resume is a baseline until variants exist"
+    assert pairs == []
+    assert unpaired == []
+
+
+def test_corpus_discovery_finds_both_corpora():
+    found = {c["name"]: c for c in audit.describe_corpora()}
+    assert {"swe_ii_corpus", "SWE_pdf"} <= set(found)
+    assert found["swe_ii_corpus"]["skillLevels"] == {"senior": 4, "junior": 4, "unqualified": 4}
+    assert found["swe_ii_corpus"]["positionDescription"] == "position-description.pdf"
+    assert found["SWE_pdf"]["pairs"] == 24
+
+
+def test_resolve_corpus_refuses_a_path_outside_the_root():
+    assert audit.resolve_corpus("SWE_pdf").name == "SWE_pdf"
+    for bad in ("../backend", "..", "nope"):
+        with pytest.raises(ValueError):
+            audit.resolve_corpus(bad)
+
 
 def test_real_corpus_pairs_every_variant():
     paths = audit.list_corpus(CORPUS)

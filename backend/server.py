@@ -823,26 +823,12 @@ class AuditStart(BaseModel):
     # be active. Omitted means "use the active one".
     provider: str | None = None
     model: str | None = None
+    corpus: str | None = None
 
 
 @app.get("/api/audits/corpus")
 def audit_corpus() -> dict[str, Any]:
-    paths = audit.list_corpus()
-    pairs, baselines, unpaired = audit.build_pairs(paths)
-    by_attribute: dict[str, int] = {}
-    for pair in pairs:
-        by_attribute[pair["attribute"]] = by_attribute.get(pair["attribute"], 0) + 1
-    return {
-        "directory": str(audit.CORPUS_DIR),
-        "files": len(paths),
-        "baselines": len(baselines),
-        "pairs": len(pairs),
-        "byAttribute": [
-            {"attribute": key, "label": audit.ATTRIBUTE_LABELS.get(key, key), "pairs": value}
-            for key, value in sorted(by_attribute.items())
-        ],
-        "unpaired": [os.path.basename(p) for p in unpaired],
-    }
+    return {"root": str(audit.CORPUS_ROOT), "corpora": audit.describe_corpora()}
 
 
 @app.post("/api/audits")
@@ -868,18 +854,40 @@ async def start_audit(body: AuditStart) -> dict[str, Any]:
     if not provider.is_configured():
         raise HTTPException(status_code=400, detail=f"{provider.label} is not configured")
 
+    try:
+        corpus_dir = audit.resolve_corpus(body.corpus)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not audit.build_pairs(audit.list_corpus(corpus_dir))[0]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The '{corpus_dir.name}' corpus has no baseline/variant pairs, so a bias audit "
+                "would have nothing to compare. Generate protected-class variants for it first."
+            ),
+        )
+
     audit_id = db.new_id()
     db.execute(
         "INSERT INTO audit_run (id, corpus, provider, model, status, created_at) VALUES (?,?,?,?,?,?)",
-        (audit_id, str(audit.CORPUS_DIR), provider_name, model, "running", db.now()),
+        (audit_id, corpus_dir.name, provider_name, model, "running", db.now()),
     )
 
     job_id = uuid.uuid4().hex[:12]
     new_job(job_id)
     asyncio.create_task(
-        audit.run_audit(job_id, audit_id, screening["id"], provider, provider_name, model)
+        audit.run_audit(
+            job_id, audit_id, screening["id"], provider, provider_name, model, corpus_dir
+        )
     )
-    return {"jobId": job_id, "auditId": audit_id, "provider": provider_name, "model": model}
+    return {
+        "jobId": job_id,
+        "auditId": audit_id,
+        "provider": provider_name,
+        "model": model,
+        "corpus": corpus_dir.name,
+    }
 
 
 @app.get("/api/audits")

@@ -53,9 +53,14 @@ from .pipeline import (
 
 logger = logging.getLogger(__name__)
 
-CORPUS_DIR = Path(
-    os.getenv("AUDIT_CORPUS_DIR", Path(__file__).resolve().parent.parent / "test-resumes" / "SWE_pdf")
+CORPUS_ROOT = Path(
+    os.getenv("AUDIT_CORPUS_ROOT", Path(__file__).resolve().parent.parent / "test-resumes")
 )
+CORPUS_DIR = Path(os.getenv("AUDIT_CORPUS_DIR", CORPUS_ROOT / "swe_ii_corpus"))
+
+#: A corpus holds resumes and, alongside them, the position description they are
+#: screened against. The latter is not a candidate.
+NON_RESUME_PREFIXES = ("position-description",)
 
 #: Which numbered baseline resume each baseline code refers to.
 BASELINE_RESUME_NUMBER: dict[str, int] = {
@@ -126,7 +131,65 @@ def baseline_number(filename: str) -> int | None:
 
 def list_corpus(corpus_dir: Path | None = None) -> list[str]:
     directory = corpus_dir or CORPUS_DIR
-    return sorted(str(p) for p in directory.glob("*.pdf"))
+    return sorted(
+        str(p)
+        for p in directory.glob("*.pdf")
+        if not p.name.lower().startswith(NON_RESUME_PREFIXES)
+    )
+
+
+def resolve_corpus(name: str | None) -> Path:
+    """Map a corpus name to its directory, refusing anything outside the root."""
+    if not name:
+        return CORPUS_DIR
+    candidate = (CORPUS_ROOT / name).resolve()
+    if CORPUS_ROOT.resolve() not in candidate.parents or not candidate.is_dir():
+        raise ValueError(f"unknown corpus: {name}")
+    return candidate
+
+
+def describe_corpora() -> list[dict[str, Any]]:
+    """Every corpus under the root, with what it can and cannot be used for."""
+    out = []
+    for directory in sorted(p for p in CORPUS_ROOT.iterdir() if p.is_dir()):
+        paths = list_corpus(directory)
+        if not paths:
+            continue
+        pairs, baselines, unpaired = build_pairs(paths)
+        by_attribute: dict[str, int] = {}
+        for pair in pairs:
+            by_attribute[pair["attribute"]] = by_attribute.get(pair["attribute"], 0) + 1
+
+        manifest = directory / "corpus.json"
+        levels: dict[str, int] = {}
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                for entry in data.get("resumes", []):
+                    levels[entry["level"]] = levels.get(entry["level"], 0) + 1
+            except (ValueError, KeyError, OSError):
+                pass
+
+        description = next(
+            (p.name for p in directory.glob("position-description.pdf")), ""
+        )
+        out.append(
+            {
+                "name": directory.name,
+                "isDefault": directory.resolve() == CORPUS_DIR.resolve(),
+                "files": len(paths),
+                "baselines": len(baselines),
+                "pairs": len(pairs),
+                "positionDescription": description,
+                "skillLevels": levels,
+                "byAttribute": [
+                    {"attribute": k, "label": ATTRIBUTE_LABELS.get(k, k), "pairs": v}
+                    for k, v in sorted(by_attribute.items())
+                ],
+                "unpaired": [os.path.basename(p) for p in unpaired],
+            }
+        )
+    return out
 
 
 def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
@@ -137,6 +200,7 @@ def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list
     file the map does not know about should be visible, not invisible.
     """
     baselines: dict[int, str] = {}
+    baseline_paths: list[str] = []
     variants: list[tuple[str, dict[str, str]]] = []
 
     for path in paths:
@@ -144,6 +208,11 @@ def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list
         if info:
             variants.append((path, info))
             continue
+        # Every non-variant file is a baseline. Only those carrying a
+        # ``Resume_<n>`` number can be *paired*, since that number is what the
+        # variant filenames refer back to — a corpus named some other way is
+        # still a corpus, it just has nothing to pair yet.
+        baseline_paths.append(path)
         number = baseline_number(path)
         if number is not None:
             baselines[number] = path
@@ -170,7 +239,7 @@ def build_pairs(paths: list[str]) -> tuple[list[dict[str, Any]], list[str], list
         )
 
     pairs.sort(key=lambda p: (p["attribute"], p["baseline_code"]))
-    return pairs, sorted(baselines.values()), unpaired
+    return pairs, sorted(baseline_paths), unpaired
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +593,15 @@ async def run_audit(
             raise ValueError(f"no PDFs found in the audit corpus at {corpus_dir or CORPUS_DIR}")
 
         pairs, baseline_paths, unpaired = build_pairs(paths)
+        if not pairs:
+            # Without a variant to compare against there is nothing for a
+            # disclosure to change, and reporting that as a pass would be a
+            # clean bill of health from a test that never ran.
+            raise ValueError(
+                f"the corpus at {corpus_dir or CORPUS_DIR} has {len(baseline_paths)} resume(s) but "
+                "no baseline/variant pairs, so there is nothing to compare. Generate "
+                "protected-class variants for it before running a bias audit."
+            )
         log(f"Corpus: {len(paths)} resumes — {len(baseline_paths)} baselines, {len(pairs)} pairs.")
         if unpaired:
             log(f"Warning: {len(unpaired)} variant(s) had no matching baseline and were skipped: "
