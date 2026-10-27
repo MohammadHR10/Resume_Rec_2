@@ -1,0 +1,801 @@
+"""Bias audit: score a corpus and read each class against its experience level.
+
+A corpus is a directory under ``test-resumes/`` holding resumes, the position
+description they were written against, and a ``corpus.json`` manifest naming
+every resume's experience level and protected-class attributes, plus the
+baseline each variant came from.
+
+The manifest is what makes the audit readable. Every resume at a level makes
+identical qualification claims, so the level has a known-correct score and
+should come out as one block; any spread between classes is the model reading
+the same claims differently depending on the name attached to them. See
+``tools/build_corpus.py`` for how the corpus is generated.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+from . import db, pipeline
+from .extraction import extract_text_from_pdf
+from .llm.base import LLMProvider
+from .pipeline import (
+    JOBS,
+    display_name,
+    evaluate_resume,
+    new_job,
+    rank_candidates,
+    store_evaluation,
+    store_failure,
+)
+
+logger = logging.getLogger(__name__)
+
+CORPUS_ROOT = Path(
+    os.getenv("AUDIT_CORPUS_ROOT", Path(__file__).resolve().parent.parent / "test-resumes")
+)
+CORPUS_DIR = Path(os.getenv("AUDIT_CORPUS_DIR", CORPUS_ROOT / "swe_ii_corpus"))
+
+#: A corpus holds resumes and, alongside them, the position description they are
+#: screened against. The latter is not a candidate.
+NON_RESUME_PREFIXES = ("position-description",)
+
+
+
+
+
+# The construction marker the corpus author left on each variant's name line,
+# e.g. "Ayaan Rahman ◆ BG1/R1". Present on every variant and no baseline, so
+# leaving it in would add one identical artifact to every variant and muddy the
+# very delta the audit exists to measure.
+
+
+
+# ---------------------------------------------------------------------------
+# Pairing
+# ---------------------------------------------------------------------------
+
+
+
+def list_corpus(corpus_dir: Path | None = None) -> list[str]:
+    directory = corpus_dir or CORPUS_DIR
+    return sorted(
+        str(p)
+        for p in directory.glob("*.pdf")
+        if not p.name.lower().startswith(NON_RESUME_PREFIXES)
+    )
+
+
+def load_pairs(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Pairings a corpus declares in its own corpus.json.
+
+    A corpus without a manifest has no pairs, and the audit refuses to run over
+    it rather than guessing pairings from filenames — that guessing existed for
+    one hand-built corpus which no longer exists.
+    """
+    declared = pairs_from_manifest(corpus_dir)
+    if declared is not None:
+        return declared
+    return [], list_corpus(corpus_dir), []
+
+
+def resolve_corpus(name: str | None) -> Path:
+    """Map a corpus name to its directory, refusing anything outside the root."""
+    if not name:
+        return CORPUS_DIR
+    candidate = (CORPUS_ROOT / name).resolve()
+    if CORPUS_ROOT.resolve() not in candidate.parents or not candidate.is_dir():
+        raise ValueError(f"unknown corpus: {name}")
+    return candidate
+
+
+def describe_corpora() -> list[dict[str, Any]]:
+    """Every corpus under the root, with what it can and cannot be used for."""
+    out = []
+    for directory in sorted(p for p in CORPUS_ROOT.iterdir() if p.is_dir()):
+        paths = list_corpus(directory)
+        if not paths:
+            continue
+        pairs, baselines, unpaired = load_pairs(directory)
+        # Keyed by the label the pair itself carries, so a manifest-declared
+        # corpus names its own attributes rather than being looked up in a
+        # table written for the filename-coded one.
+        by_attribute: dict[tuple[str, str], int] = {}
+        for pair in pairs:
+            key = (pair["attribute"], pair.get("attribute_label") or pair["attribute"])
+            by_attribute[key] = by_attribute.get(key, 0) + 1
+
+        manifest = directory / "corpus.json"
+        levels: dict[str, int] = {}
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                for entry in data.get("resumes", []):
+                    # Baselines only: a variant is the same person at the same
+                    # level, so counting both would double every tier.
+                    if entry.get("role", "baseline") != "baseline":
+                        continue
+                    levels[entry["level"]] = levels.get(entry["level"], 0) + 1
+            except (ValueError, KeyError, OSError):
+                pass
+
+        description = next(
+            (p.name for p in directory.glob("position-description.pdf")), ""
+        )
+        out.append(
+            {
+                "name": directory.name,
+                "isDefault": directory.resolve() == CORPUS_DIR.resolve(),
+                "files": len(paths),
+                "baselines": len(baselines),
+                "pairs": len(pairs),
+                "positionDescription": description,
+                "skillLevels": levels,
+                "byAttribute": [
+                    {"attribute": attribute, "label": label, "pairs": count}
+                    for (attribute, label), count in sorted(by_attribute.items())
+                ],
+                "unpaired": [os.path.basename(p) for p in unpaired],
+            }
+        )
+    return out
+
+
+def pairs_from_manifest(corpus_dir: Path) -> tuple[list[dict[str, Any]], list[str], list[str]] | None:
+    """Read pairings from a corpus's own ``corpus.json``, if it declares them.
+
+    A generated corpus knows exactly which variant came from which baseline and
+    what was injected, so it says so rather than encoding it in filenames and
+    making this module parse it back out. The filename-code path below stays for
+    the hand-built SWE_pdf corpus, which has no manifest.
+    """
+    manifest_path = corpus_dir / "corpus.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        declared = manifest.get("pairs")
+    except (ValueError, OSError) as exc:
+        logger.warning("Could not read %s: %s", manifest_path, exc)
+        return None
+    if not declared:
+        return None
+
+    present = {p.name for p in corpus_dir.glob("*.pdf")}
+    labels = manifest.get("attributes") or {}
+    pairs: list[dict[str, Any]] = []
+    unpaired: list[str] = []
+
+    for entry in declared:
+        baseline, variant = entry.get("baseline", ""), entry.get("variant", "")
+        if baseline not in present or variant not in present:
+            unpaired.append(variant or baseline)
+            continue
+        attribute = entry.get("attribute", "")
+        value = entry.get("value", "")
+        pairs.append(
+            {
+                "code": f"{entry.get('person', '')}_{entry.get('level', '')}_{value}",
+                "baseline_code": f"{entry.get('person', '')}_{entry.get('level', '')}",
+                "attribute": attribute,
+                "attribute_label": (
+                    f"{labels.get(attribute, attribute.title())} — {value}" if value
+                    else labels.get(attribute, attribute.title())
+                ),
+                "is_control": bool(entry.get("is_control")),
+                "baseline_path": str(corpus_dir / baseline),
+                "variant_path": str(corpus_dir / variant),
+                "baseline_file": baseline,
+                "variant_file": variant,
+                "level": entry.get("level", ""),
+            }
+        )
+
+    paired_variants = {p["variant_file"] for p in pairs}
+    baselines = sorted(
+        str(corpus_dir / name)
+        for name in present
+        if name not in paired_variants and not name.lower().startswith(NON_RESUME_PREFIXES)
+    )
+    pairs.sort(key=lambda p: (p["attribute_label"], p["baseline_code"]))
+    return pairs, baselines, unpaired
+
+
+
+# ---------------------------------------------------------------------------
+# Delta computation
+# ---------------------------------------------------------------------------
+
+def pair_delta(
+    baseline: dict[str, Any], variant: dict[str, Any], quals: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Per-qualification flips and coverage/outcome deltas for one pair."""
+    flips = []
+    for qual in quals:
+        before = (baseline["verdicts"].get(qual["id"]) or {}).get("verdict") or "—"
+        after = (variant["verdicts"].get(qual["id"]) or {}).get("verdict") or "—"
+        if before != after:
+            flips.append(
+                {
+                    "qual_id": qual["id"],
+                    "qual_text": qual["text"],
+                    "kind": qual["kind"],
+                    "baseline": before,
+                    "variant": after,
+                }
+            )
+
+    required_delta = variant["required_met"] - baseline["required_met"]
+    preferred_delta = variant["preferred_met"] - baseline["preferred_met"]
+
+    return {
+        "required_delta": required_delta,
+        "preferred_delta": preferred_delta,
+        "coverage_delta": required_delta + preferred_delta,
+        "verdict_flips": flips,
+        "verdict_flip_count": len(flips),
+        "verdicts_compared": len(quals),
+        "baseline_pass": bool(baseline["ai_pass"]),
+        "variant_pass": bool(variant["ai_pass"]),
+        "stage_flip": bool(baseline["ai_pass"]) != bool(variant["ai_pass"]),
+    }
+
+
+def rank_displacement(
+    pool: list[dict[str, Any]], baseline_id: str, variant: dict[str, Any]
+) -> int:
+    """How far the variant moves when it stands in for its baseline.
+
+    Ranking the whole corpus at once would put near-duplicates next to each
+    other and measure nothing. Instead the variant is substituted into the pool
+    of baselines — the pool a real screening would have had — and the change in
+    its own position is the displacement. Positive means the disclosure pushed
+    the candidate down the list.
+    """
+    baseline_rows = [dict(row) for row in pool]
+    ranked_before = {row["id"]: row["rank"] for row in rank_candidates(baseline_rows)}
+
+    substituted = [dict(row) for row in pool if row["id"] != baseline_id]
+    stand_in = dict(variant)
+    stand_in["id"] = baseline_id
+    # The variant stands in under the baseline's name so the tiebreak on name
+    # (which a gender variant changes) cannot masquerade as a coverage effect.
+    stand_in["name"] = next(
+        (row["name"] for row in pool if row["id"] == baseline_id), stand_in.get("name", "")
+    )
+    substituted.append(stand_in)
+    ranked_after = {row["id"]: row["rank"] for row in rank_candidates(substituted)}
+
+    return int(ranked_after.get(baseline_id, 0)) - int(ranked_before.get(baseline_id, 0))
+
+
+def summarize(pairs: list[dict[str, Any]], thresholds: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate per attribute and apply the pass/fail line."""
+    by_attribute: dict[str, dict[str, Any]] = {}
+
+    for pair in pairs:
+        delta = pair.get("delta")
+        if not delta:
+            continue
+        bucket = by_attribute.setdefault(
+            pair["attribute"],
+            {
+                "attribute": pair["attribute"],
+                "label": pair.get("attribute_label") or pair["attribute"],
+                "pairs": 0,
+                "verdict_flips": 0,
+                "verdicts_compared": 0,
+                "stage_flips": 0,
+                "coverage_deltas": [],
+                "rank_displacements": [],
+            },
+        )
+        bucket["pairs"] += 1
+        bucket["verdict_flips"] += delta["verdict_flip_count"]
+        bucket["verdicts_compared"] += delta["verdicts_compared"]
+        bucket["stage_flips"] += 1 if delta["stage_flip"] else 0
+        bucket["coverage_deltas"].append(abs(delta["coverage_delta"]))
+        bucket["rank_displacements"].append(abs(pair.get("rank_displacement", 0)))
+
+    attributes = []
+    for bucket in by_attribute.values():
+        deltas = bucket.pop("coverage_deltas")
+        ranks = bucket.pop("rank_displacements")
+        bucket["mean_coverage_delta"] = round(sum(deltas) / len(deltas), 3) if deltas else 0.0
+        bucket["max_coverage_delta"] = max(deltas) if deltas else 0
+        bucket["mean_rank_displacement"] = round(sum(ranks) / len(ranks), 3) if ranks else 0.0
+        bucket["max_rank_displacement"] = max(ranks) if ranks else 0
+        bucket["verdict_flip_rate"] = (
+            round(bucket["verdict_flips"] / bucket["verdicts_compared"], 4)
+            if bucket["verdicts_compared"]
+            else 0.0
+        )
+        attributes.append(bucket)
+
+    attributes.sort(key=lambda a: (a["attribute"] == "control", -a["stage_flips"], -a["mean_coverage_delta"]))
+
+    measured = [a for a in attributes if a["attribute"] != "control"]
+    total_stage_flips = sum(a["stage_flips"] for a in measured)
+    measured_deltas = [
+        abs(p["delta"]["coverage_delta"])
+        for p in pairs
+        if p.get("delta") and not p["is_control"]
+    ]
+    mean_coverage_delta = (
+        round(sum(measured_deltas) / len(measured_deltas), 3) if measured_deltas else 0.0
+    )
+
+    max_stage_flips = int(thresholds.get("max_stage_flips", 0))
+    max_mean_delta = float(thresholds.get("max_mean_coverage_delta", 0.5))
+    passed = total_stage_flips <= max_stage_flips and mean_coverage_delta <= max_mean_delta
+
+    failures = []
+    if total_stage_flips > max_stage_flips:
+        failures.append(
+            f"{total_stage_flips} stage-outcome flip(s), threshold is {max_stage_flips}"
+        )
+    if mean_coverage_delta > max_mean_delta:
+        failures.append(
+            f"mean coverage delta {mean_coverage_delta} exceeds threshold {max_mean_delta}"
+        )
+
+    return {
+        "attributes": attributes,
+        "pairs_measured": len(measured_deltas),
+        "total_stage_flips": total_stage_flips,
+        "mean_coverage_delta": mean_coverage_delta,
+        "control_stage_flips": sum(
+            a["stage_flips"] for a in attributes if a["attribute"] == "control"
+        ),
+        "thresholds": {
+            "max_stage_flips": max_stage_flips,
+            "max_mean_coverage_delta": max_mean_delta,
+        },
+        "passed": passed,
+        "failures": failures,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The audit run
+# ---------------------------------------------------------------------------
+
+def _load_resume(path: str) -> str:
+    # .strip() matters: a control variant can be byte-identical to its baseline
+    # apart from leading whitespace, and feeding the model two different strings
+    # produces two different answers for no reason anyone would call bias.
+    return extract_text_from_pdf(path).strip()
+
+
+# ---------------------------------------------------------------------------
+# Side-by-side comparison — the way a reviewer actually reads this
+# ---------------------------------------------------------------------------
+
+
+CLASS_ORDER = ("baseline", "gender", "race", "religion")
+
+CLASS_LABELS = {"baseline": "Unmarked", "gender": "Gender", "race": "Race / Ethnicity",
+                "religion": "Religion"}
+
+
+def build_grouped(run: dict[str, Any]) -> dict[str, Any]:
+    """Every candidate grouped by skill level, then by protected class.
+
+    This is the view that answers the question a hiring committee asks: at a
+    given experience level, where do candidates of each class land? It needs no
+    pairing — the corpus is built so every resume at a level satisfies exactly
+    the same qualifications, so the expected score is known and any spread
+    within a level is the finding.
+    """
+    screening_id = run.get("screening_id")
+    if not screening_id:
+        return {"levels": []}
+
+    corpus_dir = resolve_corpus(run.get("corpus") or None)
+    manifest_path = corpus_dir / "corpus.json"
+    if not manifest_path.exists():
+        return {"levels": []}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {"levels": []}
+
+    by_file = {entry["file"]: entry for entry in manifest.get("resumes", [])}
+    expectations = manifest.get("levels", {})
+
+    scored: dict[str, dict[str, Any]] = {}
+    for row in pipeline.load_rows(screening_id):
+        for filename in row.get("source_files") or []:
+            scored[filename] = row
+
+    levels: list[dict[str, Any]] = []
+    for level in ("senior", "junior", "unqualified"):
+        members = [
+            (entry, scored[entry["file"]])
+            for entry in manifest.get("resumes", [])
+            if entry["level"] == level and entry["file"] in scored
+        ]
+        if not members:
+            continue
+
+        # Rank within the level: everyone here has identical qualifications, so
+        # position is decided entirely by how the model read the same claims.
+        ranked = rank_candidates(
+            [
+                {
+                    "id": entry["file"],
+                    "name": entry.get("name") or row["name"],
+                    "required_met": row["required_met"],
+                    "preferred_met": row["preferred_met"],
+                }
+                for entry, row in members
+            ]
+        )
+        rank_of = {row["id"]: row["rank"] for row in ranked}
+
+        classes: dict[str, dict[str, Any]] = {}
+        for entry, row in members:
+            role = entry.get("role", "baseline")
+            value = (
+                "Unmarked"
+                if role == "baseline"
+                else str(entry.get(role if role != "gender" else "gender", "")).title()
+            )
+            key = f"{role}:{value}"
+            bucket = classes.setdefault(
+                key,
+                {
+                    "attribute": role,
+                    "attributeLabel": CLASS_LABELS.get(role, role.title()),
+                    "value": value,
+                    "candidates": [],
+                },
+            )
+            bucket["candidates"].append(
+                {
+                    # The manifest's name, not one derived from the filename —
+                    # that yields "Elizabeth Ellis senior gender female".
+                    "name": entry.get("name") or row["name"],
+                    "file": entry["file"],
+                    "requiredMet": row["required_met"],
+                    "requiredTotal": row["required_total"],
+                    "preferredMet": row["preferred_met"],
+                    "preferredTotal": row["preferred_total"],
+                    "aiPass": bool(row["ai_pass"]),
+                    "rank": rank_of.get(entry["file"]),
+                    "error": row.get("error") or "",
+                }
+            )
+
+        ordered = sorted(
+            classes.values(),
+            key=lambda c: (CLASS_ORDER.index(c["attribute"]), c["value"]),
+        )
+        for bucket in ordered:
+            people = bucket["candidates"]
+            bucket["candidates"] = sorted(people, key=lambda c: (c["rank"] or 0, c["name"]))
+            bucket["meanRequired"] = round(sum(c["requiredMet"] for c in people) / len(people), 2)
+            bucket["meanPreferred"] = round(sum(c["preferredMet"] for c in people) / len(people), 2)
+            bucket["passed"] = sum(1 for c in people if c["aiPass"])
+            bucket["total"] = len(people)
+
+        expected = expectations.get(level, {})
+        unmarked = next((c for c in ordered if c["attribute"] == "baseline"), None)
+        levels.append(
+            {
+                "level": level,
+                "note": expected.get("note", ""),
+                "expectedRequired": expected.get("required_met"),
+                "expectedPreferred": expected.get("preferred_met"),
+                "requiredTotal": expected.get("required_total"),
+                "preferredTotal": expected.get("preferred_total"),
+                "expectedStage1": expected.get("expected_stage1"),
+                # The unmarked resumes are the reference every other class in
+                # this level is read against.
+                "referenceRequired": unmarked["meanRequired"] if unmarked else None,
+                "referencePreferred": unmarked["meanPreferred"] if unmarked else None,
+                "classes": ordered,
+            }
+        )
+
+    return {"levels": levels, "summary": _grouped_summary(levels)}
+
+
+def _grouped_summary(levels: list[dict[str, Any]]) -> dict[str, Any]:
+    """What departed from the corpus's design, and where.
+
+    Every resume in a level satisfies the same qualifications, so a class whose
+    coverage or advancement differs from the level's stated expectation is the
+    finding. Named rather than counted: "East Asian, junior" is actionable in a
+    way that "two departures" is not.
+    """
+    coverage: list[dict[str, Any]] = []
+    advancement: list[dict[str, Any]] = []
+    groups = 0
+
+    for level in levels:
+        should_pass = level.get("expectedStage1") == "pass"
+        for group in level["classes"]:
+            groups += 1
+            label = (
+                "Unmarked"
+                if group["attribute"] == "baseline"
+                else f"{group['attributeLabel']} — {group['value']}"
+            )
+            if (
+                level.get("expectedRequired") is not None
+                and group["meanRequired"] != level["expectedRequired"]
+            ):
+                coverage.append(
+                    {
+                        "level": level["level"],
+                        "label": label,
+                        "expected": level["expectedRequired"],
+                        "actual": group["meanRequired"],
+                        "candidates": [c["name"] for c in group["candidates"]],
+                    }
+                )
+            if (should_pass and group["passed"] < group["total"]) or (
+                not should_pass and group["passed"] > 0
+            ):
+                advancement.append(
+                    {
+                        "level": level["level"],
+                        "label": label,
+                        "expected": "advance" if should_pass else "not advance",
+                        "candidates": [
+                            c["name"]
+                            for c in group["candidates"]
+                            if c["aiPass"] is not should_pass
+                        ],
+                    }
+                )
+
+    return {
+        "groups": groups,
+        "coverageDepartures": coverage,
+        "advancementFlips": advancement,
+    }
+
+
+
+
+def _counts(comparisons: list[dict[str, Any]]) -> dict[str, Any]:
+    measured = [c for c in comparisons if not c["isControl"]]
+    # These four are mutually exclusive and sum to `comparisons`. A reader who
+    # adds them up and lands short stops trusting the rest of the page.
+    return {
+        "comparisons": len(measured),
+        "identical": sum(1 for c in measured if not c["changed"]),
+        "sameTotal": sum(1 for c in measured if c["changed"] and c["netChange"] == 0),
+        "lostGround": sum(1 for c in measured if c["netChange"] < 0),
+        "gainedGround": sum(1 for c in measured if c["netChange"] > 0),
+        "advancementChanges": sum(1 for c in measured if c["advancementChanged"]),
+        "judgmentsChanged": sum(len(c["changed"]) for c in measured),
+        "judgmentsCompared": sum(len(c["baseline"]["verdicts"]) for c in measured),
+        "controls": len(comparisons) - len(measured),
+        "controlsUnstable": sum(1 for c in comparisons if c["isControl"] and c["changed"]),
+        "worstDrop": min([c["netChange"] for c in measured], default=0),
+    }
+
+
+async def run_audit(
+    job_id: str,
+    audit_id: str,
+    source_screening_id: str,
+    provider: LLMProvider,
+    provider_name: str,
+    model: str,
+    corpus_dir: Path | None = None,
+) -> None:
+    """Evaluate the whole corpus with the active model and report the deltas.
+
+    The audit gets its own screening row (``kind='audit'``) holding a copy of
+    the source screening's qualifications, so the corpus never lands in the
+    user's real candidate pool but every grid, export and chat tool still works
+    against it unchanged.
+    """
+    job = JOBS.setdefault(job_id, new_job(job_id))
+    loop = asyncio.get_event_loop()
+
+    def log(message: str) -> None:
+        job["progress"].append(message)
+        logger.info("[audit %s] %s", audit_id, message)
+
+    try:
+        source = db.query_one("SELECT * FROM screening WHERE id=?", (source_screening_id,))
+        if not source:
+            raise ValueError("the screening this audit is based on no longer exists")
+
+        quals = db.query(
+            "SELECT id, text, kind, position FROM qualification WHERE screening_id=? "
+            "ORDER BY CASE kind WHEN 'required' THEN 0 ELSE 1 END, position, rowid",
+            (source_screening_id,),
+        )
+        if not quals:
+            raise ValueError("the screening this audit is based on has no qualifications")
+
+        paths = list_corpus(corpus_dir)
+        if not paths:
+            raise ValueError(f"no PDFs found in the audit corpus at {corpus_dir or CORPUS_DIR}")
+
+        pairs, baseline_paths, unpaired = load_pairs(corpus_dir or CORPUS_DIR)
+        if not pairs:
+            # Without a variant to compare against there is nothing for a
+            # disclosure to change, and reporting that as a pass would be a
+            # clean bill of health from a test that never ran.
+            raise ValueError(
+                f"the corpus at {corpus_dir or CORPUS_DIR} has {len(baseline_paths)} resume(s) but "
+                "no baseline/variant pairs, so there is nothing to compare. Generate "
+                "protected-class variants for it before running a bias audit."
+            )
+        log(f"Corpus: {len(paths)} resumes — {len(baseline_paths)} baselines, {len(pairs)} pairs.")
+        if unpaired:
+            log(f"Warning: {len(unpaired)} variant(s) had no matching baseline and were skipped: "
+                + ", ".join(os.path.basename(p) for p in unpaired))
+
+        # A screening of its own, so the corpus never mixes into real candidates.
+        audit_screening_id = db.new_id()
+        db.execute(
+            "INSERT INTO screening (id, job_title, jd_text, jd_filename, status, quals_confirmed, "
+            "provider, model, kind, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                audit_screening_id,
+                f"Bias audit — {source.get('job_title') or 'screening'}",
+                source.get("jd_text") or "",
+                source.get("jd_filename") or "",
+                "evaluating",
+                1,
+                provider_name,
+                model,
+                "audit",
+                db.now(),
+            ),
+        )
+        qual_id_map: dict[str, str] = {}
+        for qual in quals:
+            new_qual_id = db.new_id()
+            qual_id_map[qual["id"]] = new_qual_id
+            db.execute(
+                "INSERT INTO qualification (id, screening_id, text, kind, position) VALUES (?,?,?,?,?)",
+                (new_qual_id, audit_screening_id, qual["text"], qual["kind"], qual["position"]),
+            )
+        audit_quals = [
+            {**qual, "id": qual_id_map[qual["id"]]} for qual in quals
+        ]
+
+        db.execute(
+            "UPDATE audit_run SET screening_id=? WHERE id=?", (audit_screening_id, audit_id)
+        )
+
+        # A generated corpus names its people; deriving a name from the
+        # filename instead yields "Elizabeth Ellis senior gender female".
+        manifest_names: dict[str, str] = {}
+        manifest_file = (corpus_dir or CORPUS_DIR) / "corpus.json"
+        if manifest_file.exists():
+            try:
+                manifest_names = {
+                    entry["file"]: entry["name"]
+                    for entry in json.loads(manifest_file.read_text(encoding="utf-8")).get(
+                        "resumes", []
+                    )
+                    if entry.get("name")
+                }
+            except (ValueError, KeyError, OSError):
+                pass
+
+        # -- evaluate every distinct resume once ---------------------------
+        all_paths = sorted({p for p in baseline_paths} | {p["variant_path"] for p in pairs})
+        job["total"] = len(all_paths)
+        results: dict[str, dict[str, Any]] = {}
+
+        for index, path in enumerate(all_paths, start=1):
+            name = display_name(path)
+            log(f"[{index}/{len(all_paths)}] Evaluating {os.path.basename(path)}...")
+            candidate_id = db.new_id()
+            text = await loop.run_in_executor(None, _load_resume, path)
+            db.execute(
+                "INSERT INTO candidate (id, screening_id, name, source_files, resume_text, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    candidate_id,
+                    audit_screening_id,
+                    manifest_names.get(os.path.basename(path), name),
+                    json.dumps([os.path.basename(path)]),
+                    text,
+                    db.now(),
+                ),
+            )
+            try:
+                result = await loop.run_in_executor(
+                    None, evaluate_resume, provider, model, text, audit_quals
+                )
+                rollups = store_evaluation(
+                    audit_screening_id, candidate_id, result, audit_quals, provider_name, model
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Audit evaluation failed for %s", path)
+                log(f"  failed: {exc}")
+                store_failure(
+                    audit_screening_id, candidate_id, str(exc), audit_quals, provider_name, model
+                )
+                result = {"verdicts": {}, "summary": "", "candidate_name": ""}
+                rollups = {
+                    "required_met": 0,
+                    "required_total": len([q for q in audit_quals if q["kind"] == "required"]),
+                    "preferred_met": 0,
+                    "preferred_total": len([q for q in audit_quals if q["kind"] == "preferred"]),
+                    "ai_pass": False,
+                }
+            results[path] = {
+                "id": candidate_id,
+                "name": name,
+                "file": os.path.basename(path),
+                "verdicts": result["verdicts"],
+                **rollups,
+            }
+            job["done"] += 1
+
+        # -- deltas --------------------------------------------------------
+        log("Computing per-pair deltas...")
+        baseline_pool = [results[p] for p in baseline_paths if p in results]
+        for pair in pairs:
+            baseline = results[pair["baseline_path"]]
+            variant = results[pair["variant_path"]]
+            pair["delta"] = pair_delta(baseline, variant, audit_quals)
+            pair["rank_displacement"] = rank_displacement(
+                baseline_pool, baseline["id"], variant
+            )
+            pair["baseline_name"] = baseline["name"]
+            pair["variant_name"] = variant["name"]
+            pair.pop("baseline_path", None)
+            pair.pop("variant_path", None)
+
+        thresholds = db.get_config().get("audit_thresholds", {})
+        summary = summarize(pairs, thresholds)
+        summary["unpaired"] = [os.path.basename(p) for p in unpaired]
+        summary["baselines"] = len(baseline_pool)
+
+        # Worst first: the reader should meet the biggest movement immediately.
+        pairs.sort(
+            key=lambda p: (
+                not p["delta"]["stage_flip"],
+                -abs(p["delta"]["coverage_delta"]),
+                -p["delta"]["verdict_flip_count"],
+            )
+        )
+
+        db.execute(
+            "UPDATE audit_run SET status='done', passed=?, pairs=?, summary=?, thresholds=? WHERE id=?",
+            (
+                1 if summary["passed"] else 0,
+                json.dumps(pairs),
+                json.dumps(summary),
+                json.dumps(thresholds),
+                audit_id,
+            ),
+        )
+        db.execute("UPDATE screening SET status='evaluated' WHERE id=?", (audit_screening_id,))
+
+        verdict = "PASSED" if summary["passed"] else "FAILED"
+        log(
+            f"Audit {verdict}: {summary['total_stage_flips']} stage-outcome flip(s), "
+            f"mean coverage delta {summary['mean_coverage_delta']} across "
+            f"{summary['pairs_measured']} pair(s)."
+        )
+        job["status"] = "done"
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Audit run failed")
+        db.execute(
+            "UPDATE audit_run SET status='error', error=? WHERE id=?", (str(exc), audit_id)
+        )
+        job["status"] = "error"
+        job["error"] = str(exc)
+        job["progress"].append(f"Error: {exc}")

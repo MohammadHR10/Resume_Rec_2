@@ -1,0 +1,258 @@
+:root {
+  --verdict-meets: #c6efce;
+  --verdict-meets-text: #0b6122;
+  --verdict-partial: #ffeb9c;
+  --verdict-partial-text: #7a4a00;
+  --verdict-no: #ffc7ce;
+  --verdict-no-text: #9c0006;
+}
+
+body {
+  background-color: #f6f7f9;
+}
+
+.navbar-brand {
+  font-weight: 600;
+}
+
+#alert-strip {
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+}
+
+/* Dropzones ---------------------------------------------------------------- */
+
+.dropzone {
+  border: 2px dashed #adb5bd;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone-active {
+  border-color: var(--bs-primary);
+  background-color: rgba(13, 110, 253, 0.06);
+}
+
+.dropzone:focus-visible {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: 2px;
+}
+
+/* Rendered but invisible, so a programmatic .click() still opens the picker.
+   display:none would not. */
+.visually-hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Qualification checklists -------------------------------------------------- */
+
+.qual-list .qual-text {
+  outline: none;
+  border-bottom: 1px dashed transparent;
+  min-width: 4rem;
+}
+
+.qual-list .qual-text:focus {
+  border-bottom-color: var(--bs-primary);
+}
+
+/* Stage grid ---------------------------------------------------------------- */
+
+.stage-grid {
+  width: 100%;
+  height: 520px;
+}
+
+/* The header's fill, weight and text colour come from the Theming API in
+   stageGrid.ts; only the icons need a nudge to stay legible on the dark fill. */
+.stage-grid .ag-header-cell .ag-icon,
+.stage-grid .ag-header-cell .ag-sort-indicator-icon {
+  color: #ffffff;
+}
+
+/* Headers stay on one line and ellipsize; the full text is in the tooltip and
+   in the detail panel, so the header never grows taller than a row. */
+.stage-grid .ag-header-cell-text {
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.verdict-meets {
+  background-color: var(--verdict-meets);
+  color: var(--verdict-meets-text);
+  font-weight: 600;
+}
+
+.verdict-partial {
+  background-color: var(--verdict-partial);
+  color: var(--verdict-partial-text);
+  font-weight: 600;
+}
+
+.verdict-no {
+  background-color: var(--verdict-no);
+  color: var(--verdict-no-text);
+  font-weight: 600;
+}
+
+.verdict-missing {
+  color: #6c757d;
+}
+
+.verdict-evidence-dot {
+  opacity: 0.55;
+}
+
+.verdict-reasoning {
+  white-space: pre-wrap;
+}
+
+.audit-control-row {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* Chat ---------------------------------------------------------------------- */
+
+.chat-log {
+  height: 460px;
+  overflow-y: auto;
+}
+
+.chat-message {
+  margin-bottom: 0.85rem;
+}
+
+.chat-meta {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6c757d;
+  margin-bottom: 0.15rem;
+}
+
+.chat-body {
+  white-space: pre-wrap;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  background-color: #f1f3f5;
+}
+
+/* Rendered markdown supplies its own block spacing, so the pre-wrap that keeps
+   plain text readable would double every gap. */
+.chat-markdown {
+  white-space: normal;
+}
+
+.chat-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol {
+  margin-bottom: 0.5rem;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  padding-left: 1.15rem;
+}
+
+.chat-markdown code {
+  background-color: rgba(0, 0, 0, 0.06);
+  padding: 0.05rem 0.25rem;
+  border-radius: 0.2rem;
+  font-size: 0.85em;
+}
+
+.chat-markdown pre {
+  background-color: rgba(0, 0, 0, 0.06);
+  padding: 0.5rem;
+  border-radius: 0.3rem;
+  overflow-x: auto;
+}
+
+.chat-markdown table {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  font-size: 0.85em;
+  border-collapse: collapse;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid #dee2e6;
+  padding: 0.25rem 0.4rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-markdown th {
+  background-color: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
+.chat-markdown blockquote {
+  border-left: 3px solid #ced4da;
+  margin: 0 0 0.5rem;
+  padding-left: 0.6rem;
+  color: #495057;
+}
+
+.chat-user .chat-body {
+  background-color: #e7f1ff;
+}
+
+.chat-note {
+  font-size: 0.78rem;
+  margin-top: 0.25rem;
+}
+
+.chat-suggestion {
+  font-size: 0.75rem;
+}
+
+/* When the chat is collapsed it becomes a tab on the right edge, so the way
+   back is always visible without taking a column. */
+.chat-reopen {
+  position: fixed;
+  right: 0;
+  top: 45%;
+  z-index: 1020;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  writing-mode: vertical-rl;
+  padding: 0.75rem 0.35rem;
+  background-color: var(--bs-body-bg);
+}
+
+/* Progress log -------------------------------------------------------------- */
+
+.progress-log {
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

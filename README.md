@@ -1,134 +1,194 @@
-# Resume Recommender
+# Staged Resume Screening
 
-AI-powered resume analysis and candidate recommendation system using Mistral AI. Available as both a web interface (Streamlit) and REST API (FastAPI) for easy integration.
+Screen a pool of resumes against a position description, one qualification at a time,
+through a funnel that never advances anyone without a human saying so.
 
-## Features
+A reviewer drops in a position-description PDF; the app itemizes it into required and
+preferred qualifications and hands back two editable checklists. Once those are confirmed,
+every uploaded resume gets a per-qualification verdict — **Meets**, **Partial** or **No**,
+each with evidence quoted from the resume. Coverage counts, the pass recommendation and the
+rank order are then computed in code, shown in a spreadsheet-like grid, and left for a person
+to act on.
 
-- **AI-Powered Analysis**: Uses Mistral AI for intelligent resume evaluation
-- **Structured Output**: Returns validated JSON with scores, recommendations, and detailed analysis
-- **Dual Interface**: Web UI for direct use, REST API for integration
-- **PDF Support**: Extracts text from PDF resumes automatically
-- **Comprehensive Evaluation**: Provides scores, strengths, concerns, skills match, and recommendations
+**What the model does and does not do.** The model produces verdicts and evidence. It does
+not compute totals, decide who passes, rank anybody, or advance anyone. Those are ordinary
+Python, so they are reproducible, explainable, and identical no matter which model was used.
 
-## Quick Start
+## Screening workflow
 
-### Prerequisites
+1. **Position description → checklist.** Drop a PDF. It is parsed into atomic, verdict-able
+   qualifications, split across required and preferred. Reword, delete, add, reorder or move
+   items between the lists, then confirm. Nothing can be evaluated until you do.
+2. **Resumes.** Drop PDFs, or a ZIP of them. Text is extracted per candidate; files named
+   `LastName, FirstName …` are grouped so a resume and a cover letter count as one person.
+3. **Evaluate.** One model call per candidate covering the whole checklist, batched with a
+   pause between batches so a rate-limit window can refill. Progress streams to the page and
+   results are written as they land.
+4. **Stage 1 — Minimum Requirements.** Everyone starts here. The AI recommends a pass only
+   when *every* required qualification is `Meets` — `Partial` does not pass. Promote or
+   reject, in bulk if you like. Overriding the recommendation is expected, and is recorded
+   in an audit trail with an optional note.
+5. **Stage 2 — Preferred Qualifications.** The survivors, ranked by preferred coverage.
+6. **Stage 3 — Interview Candidates.** The confirmed shortlist.
 
-1. **Python 3.8+** installed
-2. **Mistral AI API Key** - Get one from [Mistral AI](https://mistral.ai/)
+Any stage exports to a styled Excel workbook (frozen bold header, colour-coded verdicts,
+evidence attached to the cell it justifies) or plain CSV.
 
-### Installation
+## Per-stage chat
 
-1. **Clone the repository:**
+Each stage has a chat panel that handles open-ended questions, not just canned commands:
 
-   ```bash
-   git clone <repository-url>
-   cd Resume_Rec_2
-   ```
+- *"Why is Alice ranked above Bob?"*
+- *"Why did so many candidates make it past this stage?"*
+- *"What happens to the list if we drop the degree requirement?"*
+- *"Sort by preferred coverage, highest first."* — chat can drive the grid.
 
-2. **Create and activate virtual environment:**
+The built-in agent uses an allowlisted app-tool loop for every provider and model.
+It has no shell, filesystem, SQL, arbitrary HTTP or CLI-agent access. Even explanations
+are emitted through the `reply` tool; malformed calls and prose-only responses are rejected.
+Legacy Independent-mode settings cannot enable a CLI.
 
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+The agent can inspect screening state and promotion history, run deterministic analyses,
+sort/filter grids, select candidates, open evidence, switch stages/pages, show/hide panels,
+offer exports and file choosers, and prepare checklist, candidate, evaluation, screening,
+model and audit changes. The current grid selection is available in the main and pop-out chat.
 
-3. **Install dependencies:**
+Applicant questions use three flexible read-only tools: `find_candidates` combines filters,
+`read_candidate` reads extracted source text and recorded verdict explanations (including
+batch reads), and `analyze_candidates` compares custom groups with complete counts and explicit
+overlaps. For example: *“Who has R2 marked Partial, and what does their resume actually say?”*
+or *“Compare those who meet all required qualifications with those meeting two preferred ones.”*
+See [applicant research examples](docs/candidate-research.md) for the query shapes and paging rules.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+Data changes appear as review cards with **Apply change** and **Cancel** controls.
+The model cannot approve its own proposals. Changes are checked again when applied;
+stale proposals and duplicate approvals are rejected. Credentials stay on Configuration,
+and local files are selected by the reviewer in a file chooser.
 
-4. **Set up environment variables:**
-   Create a `.env` file in the project root:
-   ```env
-   mistral_api=your_mistral_api_key_here
-   ```
+Analysis tools import the same ranking and rollup code as the grid. UI actions travel through
+the backend with stable IDs, so pop-out chat can control the main window without replaying
+actions. See [the tool catalog](docs/agent-tools.md) for capabilities and boundaries.
 
-## Usage
+## Bias audit
 
-### Option 1: Web Interface (Streamlit)
+`test-resumes/swe_ii_corpus/` holds 48 resumes: 12 baselines and 36 variants, generated by
+`tools/build_corpus.py` from an explicit statement of what each one satisfies. Four people at
+three experience levels, each with a gender, race/ethnicity and religion variant that differs
+by one attribute and nothing else.
 
-**Start the Streamlit app:**
+| Attribute | Signal | Held constant |
+|---|---|---|
+| **Gender** | Traditionally gendered first name and matching pronouns | everything else |
+| **Race / ethnicity** | Distinctively raced first and last name | gender — read against the white-coded name |
+| **Religion** | The congregation in a volunteer line every resume carries | name and gender |
 
-```bash
-source venv/bin/activate
-streamlit run app.py
+The point of building it this way: **every resume at an experience level makes identical
+qualification claims**, so the level has a known-correct score and should come out as one
+block. Seniors meet 7/7 required and 7/7 preferred; juniors 7/7 and 1/7; unqualified 3/7 and
+1/7. That expected outcome is recorded in `corpus.json` as a fact about the documents.
+
+One click runs the corpus through a model of your choosing — independent of the model doing
+your screening — and groups the results by experience level, then by class. Anywhere a class
+departs from its level's designed coverage, or advances differently than the level expects,
+the row is flagged and the candidates named. No pairing and no statistics vocabulary: the
+comparison is a column that should read one number.
+
+Every run is stored under the corpus and model that produced it, and the run history is a
+model comparison table.
+
+## Model configuration
+
+Two providers, selected per run on the Configuration page:
+
+- **Azure OpenAI via the UL AI proxy** — Bearer-authed, OpenAI-compatible.
+- **SIS fastLLM gateway** — UT System's private AI infrastructure (Llama, Nemotron, GPT-OSS).
+  Uses the same `LLM_GATEWAY_*` variables and `hl-*` attribution headers the previous
+  Streamlit app used, so an existing `.env` works unchanged, and pins a sampling seed so a
+  resume scores the same way twice.
+
+Every evaluation, chat session and audit run is tagged with the provider and model used.
+Comparing two models means running the same screening under each — there is no side-by-side
+diff view by design.
+
+## Setup
+
+Requires Python 3.12+ and Node 20+.
+
+```powershell
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements-dev.txt
+
+copy .env.example .env      # fill in provider credentials
+
+cd frontend
+npm install
+npm run build               # builds to ../dist, which FastAPI serves
+cd ..
+
+uvicorn backend.server:app --port 8000     # http://localhost:8000
 ```
 
-**Access the app:**
+For frontend work, run `npm run dev` in `frontend/` (port 5173, proxies `/api` to 8000)
+alongside `uvicorn ... --reload`.
 
-- Open your browser and go to: `http://localhost:8501`
-- Upload PDF resumes
-- Enter job title, department, and description
-- Click "Recommend Candidates" to get AI analysis
+### Docker
 
-**Features:**
-
-- Easy drag-and-drop PDF upload
-- Real-time analysis results
-- Structured display with scores and recommendations
-- Support for multiple resume analysis
-
-### Option 2: REST API (FastAPI)
-
-**Start the API server:**
-
-```bash
-source venv/bin/activate
-uvicorn main:app --reload
+```powershell
+docker compose up --build   # http://localhost:8000
 ```
 
-**Access the API:**
+Node builds the frontend in the first stage; Python serves the API and the built assets in
+the second. Screenings, stage decisions and audit runs live in the `screening-data` volume.
 
-- API Base URL: `http://localhost:8888`
-- Interactive docs: `http://localhost:8888/docs`
-- API documentation: `http://localhost:8888/redoc`
+### Credentials
 
-**API Endpoint:**
+Two ways to supply them, and the Configuration page wins when both are present:
 
-```
-POST /recommend
-```
+1. **Configuration page → Provider connections** — enter the gateway URL and bearer token in
+   the browser. They are stored in the application database. The token is write-only: it is
+   never sent back to the browser, only a masked hint, and it is stripped from the database
+   copy a chat harness is given. **The app has no login of its own**, so anyone who can reach
+   the page can use the credentials — put it behind your normal access controls.
+2. **`.env`** — the deployment-friendly route, and what Docker uses. See `.env.example`.
 
-**Request Format (multipart/form-data):**
+| Variable | Purpose |
+|----------|---------|
+| `ULMAIPROXY_BASE_URL`, `ULMAIPROXY_AUTH_TOKEN` | UL AI proxy endpoint and Bearer token |
+| `LLM_GATEWAY_URL`, `LLM_GATEWAY_KEY` | SIS fastLLM gateway (same names the previous app used) |
+| `HL_PROJECT_ID`, `HL_REQUESTER_ID` | Gateway tenant attribution, sent as `hl-*` headers |
+| `LLM_MODEL`, `LLM_SEED` | Gateway model id and the pinned sampling seed |
+| `FASTLLM_JSON_SCHEMA` | `0` if the gateway's models reject `response_format` |
+| `SCREENING_DB` | SQLite file (default `./data/screening.db`) |
+| `CHAT_WORKSPACE_ROOT` | Per-chat-session scratch directories |
+| `BATCH_SIZE`, `BATCH_DELAY_SECONDS` | Evaluation batching |
+| `AUDIT_CORPUS_DIR` | Bias audit corpus |
 
-- `job_title` (string): The job position title
-- `department` (string): Department (Engineering, Marketing, Design, Data, Other)
-- `job_description` (string): Detailed job requirements and description
-- `resume_file` (file): PDF file containing the candidate's resume
+## Tests
 
-## Project Structure
-
-```
-Resume_Rec_2/
-├── app.py              # Streamlit web interface
-├── main.py             # FastAPI backend server
-├── mistral_client.py   # Mistral AI integration
-├── pdf_extract.py      # PDF text extraction utilities
-├── test_api.py         # API testing script
-├── requirements.txt    # Python dependencies
-├── .env                # Environment variables (create this)
-└── README.md          # This file
-```
-
-## Dependencies
-
-- **FastAPI**: REST API framework
-- **Streamlit**: Web interface framework
-- **Mistral AI**: AI model for resume analysis
-- **pdfminer.six**: PDF text extraction
-- **Pydantic**: Data validation and serialization
-- **uvicorn**: ASGI server for FastAPI
-
-## Environment Variables
-
-Required environment variables in `.env` file:
-
-```env
-mistral_api=your_mistral_api_key_here
+```powershell
+python -m pytest
 ```
 
-## License
+Covers the deterministic half: rollups, ranking, stage gating, corpus composition and integrity,
+JD-parse and verdict handling, provider clients against mocked HTTP, the chat tools, the
+tool-only loop, human approvals, app controls, and export layout. No test makes a real LLM call —
+verdict quality is validated by hand against the corpus and a real position description.
 
-MIT License - see LICENSE file for details.
+## Known limitations
+
+- **The SIS gateway's URL and key are the only things still missing.** The request shape is
+  taken from the previous app's own working client (`origin/VDI`), so filling in
+  `LLM_GATEWAY_URL` and `LLM_GATEWAY_KEY` should be all that is needed. Model *listing* is
+  unproven — the old client never listed models, so `/v1/models` may 404, in which case the
+  Configuration page falls back to a free-text model field.
+- **Scanned PDFs need OCR first** — text extraction is text-layer only, and a resume with no
+  extractable text is reported as skipped rather than silently evaluated as empty.
+
+## Documentation
+
+- `docs/requirements.md` — scope and decisions, the single source of truth
+- `docs/implementation-plan.md` — how it was built, and what is still open
+- `docs/deploying-to-linux.md` — moving this off a Windows workstation into a container
+- `docs/backlog.md` — what the rebuild deliberately dropped, and why
+- `CLAUDE.md` — architecture notes and the traps worth knowing before editing
