@@ -2,8 +2,12 @@
 
 These existed in the Streamlit app and were deliberately dropped. **No code seams
 are reserved for them.** If one is ever wanted again it gets built fresh against
-the current architecture; the old implementation is on `main`'s git history and
-is not a starting point.
+the current architecture; it is not a starting point.
+
+The Streamlit app's final state is the `streamlit-app-final` tag, not `main`'s
+history — `main` only ever held an earlier copy, and the branches that carried
+the rest were deleted once the tag made them redundant. Read it with
+`git show streamlit-app-final:<file>`.
 
 ## Anonymization (redact-before-LLM)
 
