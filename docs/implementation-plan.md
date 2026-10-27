@@ -43,7 +43,7 @@ Resume_Rec_2/
 └── docs/
 ```
 
-**Clean slate:** the rebuild happens on a new branch, and Phase 0 **deletes** the entire Streamlit-era codebase — no `legacy/` folder, no ported code. Git history on `main` is the archive; anything worth resurrecting later gets rebuilt against the new architecture, not copied. The only code in the repo is code the requirements list demands. `CLAUDE.md` is rewritten at the end.
+**Clean slate:** the rebuild happens on a new branch, and Phase 0 **deletes** the entire Streamlit-era codebase — no `legacy/` folder, no ported code. Anything worth resurrecting later gets rebuilt against the new architecture, not copied. (The old codebase has since been removed from the repository entirely, so there is no archive to copy from.) The only code in the repo is code the requirements list demands. `CLAUDE.md` is rewritten at the end.
 
 ## Core data model (SQLite)
 
@@ -63,7 +63,7 @@ Persistence is the biggest departure from ResumeAI (in-memory jobs): human-gated
 
 ### Phase 0 — Clean slate + scaffold
 
-1. Create the rebuild branch. **Delete** all Streamlit-era files: `app.py`, `main.py`, `mistral_client.py`, `pdf_extract.py`, `cover_letter_analyzer.py`, `test_api.py`, `enhanced_client.py`, `fix_indentation.py`, `nginx.conf`, the old `Dockerfile`, both docker-compose files, and the old `requirements.txt`. Recovery path is git history on `main` — nothing is quarantined or ported.
+1. Create the rebuild branch. **Delete** all Streamlit-era files: `app.py`, `main.py`, `mistral_client.py`, `pdf_extract.py`, `cover_letter_analyzer.py`, `test_api.py`, `enhanced_client.py`, `fix_indentation.py`, `nginx.conf`, the old `Dockerfile`, both docker-compose files, and the old `requirements.txt`. Nothing is quarantined or ported. (Those files and their history have since been removed from the repository.)
 2. Scaffold `backend/` (FastAPI skeleton, `db.py` with schema init) and `frontend/` (Vite + TS + Bootstrap, conventions from `ResumeAI/frontend`), plus AG Grid Community dependency. Fresh `requirements.txt` containing only what the new code imports.
 3. New Dockerfile (multi-stage: Node builds frontend → Python serves `dist/`), docker-compose, `.env.example` documenting `ULMAIPROXY_*` and `FASTLLM_*` vars.
 4. `pytest` wiring with one smoke test (app boots, schema creates).
@@ -143,7 +143,7 @@ The chat must handle open-ended analytical questions — "why is A ranked higher
 ### Phase 7 — Docs
 
 1. Rewrite `CLAUDE.md` for the new architecture; rewrite `README.md` (setup, env vars, screening workflow, audit mode).
-2. One backlog list in docs naming the deleted features that could return as new builds if ever needed: anonymization, cover-letter AI detection, custom evaluation fields. No code seams reserved for them.
+2. ~~One backlog list in docs naming the deleted features.~~ Written, then removed once the previous application was retired: nothing is reserved for those features, and anything wanted again gets built fresh against this architecture.
 
 ## Test strategy
 
@@ -157,7 +157,7 @@ Phases are sequential by default (each builds on the previous), but Phase 6 step
 
 | # | Item | Blocks | Status |
 |---|------|--------|--------|
-| 1 | SIS fastLLM gateway URL, auth, API flavor, model list | Phase 1 step 3 going live; also determines whether SIS models can drive the codex CLI harness | **Mostly resolved 2026-07-28.** The API flavor and auth were never unknown — the Streamlit app's own gateway client on `origin/VDI` (`mistral_client.py` at `4cc18c9`) documents them: OpenAI chat-completions shape, `LLM_GATEWAY_URL`/`LLM_GATEWAY_KEY`, `hl-project-id`/`hl-requester-id` attribution headers, pinned `seed`, models named `llama-3.2-90b-vision-instruct` / `Nemotron 49b` / `GPT 120b`. `backend/llm/fastllm.py` now implements that contract. **Still needed:** the URL and key values themselves, and confirmation of whether `/v1/models` listing works (the old client never listed). |
+| 1 | SIS fastLLM gateway URL, auth, API flavor, model list | Phase 1 step 3 going live; also determines whether SIS models can drive the codex CLI harness | **Mostly resolved 2026-07-28.** The API flavor and auth were never unknown — the previous application's own gateway client documented them: OpenAI chat-completions shape, `LLM_GATEWAY_URL`/`LLM_GATEWAY_KEY`, `hl-project-id`/`hl-requester-id` attribution headers, pinned `seed`, models named `llama-3.2-90b-vision-instruct` / `Nemotron 49b` / `GPT 120b`. `backend/llm/fastllm.py` now implements that contract. **Still needed:** the URL and key values themselves, and confirmation of whether `/v1/models` listing works (the old client never listed). |
 | 2 | Claude/Codex CLI availability + auth inside the app container (via UL AI proxy creds) | Phase 5 Mode A | **Still open.** Adapters ship and route by env override; neither CLI is installed in the image yet, so harness turns degrade to structured until one is added. |
 | 3 | "Negligible" bias threshold | Phase 6 pass/fail line | **Settled 2026-07-28:** zero stage-outcome flips, mean absolute coverage delta ≤ 0.5 qualifications. Stored in config and editable on the Configuration page. |
 | 4 | SWE_pdf filename code semantics | Phase 6 pairing map | **Settled 2026-07-28:** `G` = gender, `R` = religion, `RA` = race/ethnicity & national origin; no age signal. `BG4_G4` and `BE2_G2` are negative controls. See `requirements.md` §6 and `backend/audit.py`. |

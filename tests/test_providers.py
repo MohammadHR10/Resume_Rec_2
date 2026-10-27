@@ -182,8 +182,8 @@ def test_client_errors_fail_fast(transport):
 
 
 # ---------------------------------------------------------------------------
-# The SIS gateway's own contract, as proven by the Streamlit app's VDI-branch
-# client: LLM_GATEWAY_* env names, hl-* attribution headers, a pinned seed, and
+# The SIS gateway's own contract, as proven by the previous gateway client
+# (since removed): LLM_GATEWAY_* env names, hl-* attribution headers, a pinned seed, and
 # a URL that may be the endpoint rather than a root.
 # ---------------------------------------------------------------------------
 

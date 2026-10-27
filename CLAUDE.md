@@ -12,8 +12,7 @@ questions about the results, and a built-in bias audit measures whether disclosi
 protected characteristic changes any outcome.
 
 `docs/requirements.md` is the single source of truth for scope; `docs/implementation-plan.md`
-records how it was built and what is still open; `docs/backlog.md` lists what was
-deliberately dropped from the Streamlit-era app.
+records how it was built and what is still open.
 
 **The division of labour is the whole design.** The model produces exactly one thing: a
 per-qualification verdict (`Meets` / `Partial` / `No`) with evidence quoted from the resume.

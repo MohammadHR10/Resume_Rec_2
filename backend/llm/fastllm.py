@@ -2,9 +2,9 @@
 
 SIS is a UT System department hosting private AI infrastructure (Llama,
 Nemotron, GPT-OSS and other open-weight models). This client follows the
-contract proven by the Streamlit app's own gateway wiring on the ``VDI``
-branch (`mistral_client.py` at `4cc18c9`), which is the only place the real
-request shape was ever exercised:
+contract proven by the previous application's own gateway wiring, which was
+the only place the real request shape had been exercised before this client.
+That code has since been removed; the shape it established is recorded here:
 
     POST $LLM_GATEWAY_URL
     Authorization: Bearer $LLM_GATEWAY_KEY

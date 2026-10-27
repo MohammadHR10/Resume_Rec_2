@@ -103,7 +103,7 @@ Two providers, selected per run on the Configuration page:
 - **Azure OpenAI via the UL AI proxy** — Bearer-authed, OpenAI-compatible.
 - **SIS fastLLM gateway** — UT System's private AI infrastructure (Llama, Nemotron, GPT-OSS).
   Uses the same `LLM_GATEWAY_*` variables and `hl-*` attribution headers the previous
-  Streamlit app used, so an existing `.env` works unchanged, and pins a sampling seed so a
+  application used, so an existing `.env` works unchanged, and pins a sampling seed so a
   resume scores the same way twice.
 
 Every evaluation, chat session and audit run is tagged with the provider and model used.
@@ -190,5 +190,4 @@ verdict quality is validated by hand against the corpus and a real position desc
 - `docs/requirements.md` — scope and decisions, the single source of truth
 - `docs/implementation-plan.md` — how it was built, and what is still open
 - `docs/deploying-to-linux.md` — moving this off a Windows workstation into a container
-- `docs/backlog.md` — what the rebuild deliberately dropped, and why
 - `CLAUDE.md` — architecture notes and the traps worth knowing before editing

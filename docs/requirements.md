@@ -4,7 +4,7 @@ Single source of truth for what is being built. The build itself is sequenced in
 
 ## Summary
 
-Rebuild Resume_Rec_2 as a **FastAPI + TypeScript staged resume-screening app**, modeled on the sibling `ResumeAI` repo's architecture. The rebuild happens on a new branch and **deletes the entire existing Streamlit codebase in its first commit** — no legacy folder, no ported code; git history on `main` is the archive. The only code in the repo is code these requirements demand.
+Rebuild Resume_Rec_2 as a **FastAPI + TypeScript staged resume-screening app**, modeled on the sibling `ResumeAI` repo's architecture. The rebuild happens on a new branch and **deletes the entire existing Streamlit codebase in its first commit** — no legacy folder, no ported code. (That codebase has since been removed from the repository's history as well.) The only code in the repo is code these requirements demand.
 
 ## Functional requirements
 
