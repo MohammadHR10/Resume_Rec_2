@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pytest
 import requests
@@ -36,7 +37,10 @@ def transport(monkeypatch):
     queue: list[FakeResponse] = []
 
     def post(url, headers=None, json=None, timeout=None):
-        calls.append({"url": url, "headers": headers, "body": json})
+        # Snapshot the body: the client edits it in place between attempts (the
+        # seed moves, a rejected response_format is dropped), and recording the
+        # live object would show every earlier call the final state instead.
+        calls.append({"url": url, "headers": headers, "body": deepcopy(json)})
         if not queue:
             raise AssertionError(f"unexpected POST to {url}")
         response = queue.pop(0)
@@ -127,9 +131,11 @@ def test_an_unparseable_reply_is_not_echoed_back_to_the_user():
 # Requests
 # ---------------------------------------------------------------------------
 
-def test_structured_extract_posts_a_strict_json_schema(gateway, transport):
+def test_structured_extract_posts_a_strict_json_schema(gateway, transport, monkeypatch):
     """Against a gateway that honours structured outputs, the schema goes on
-    the wire. (The UL proxy is the exception — see its own test.)"""
+    the wire. (The UL proxy is the exception — see its own test.) fastLLM has
+    to opt in, because the SIS gateway accepts the parameter and ignores it."""
+    monkeypatch.setenv("FASTLLM_JSON_SCHEMA", "1")
     transport["queue"].append(completion('{"name": "Ada", "score": 3}'))
     result = FastLLMProvider().structured_extract("prompt", SCHEMA)
 
@@ -275,7 +281,7 @@ def test_other_providers_still_pin_temperature_for_repeatable_scoring(gateway, t
     transport["queue"].append(completion('{"name":"a","score":1}'))
     FastLLMProvider().structured_extract("p", SCHEMA)
     assert transport["calls"][0]["body"]["temperature"] == 0
-    assert "response_format" in transport["calls"][0]["body"]
+    assert transport["calls"][0]["body"]["seed"] == 42
 
 
 def test_an_opaque_400_is_surfaced_rather_than_blindly_retried(gateway, transport):
@@ -287,7 +293,10 @@ def test_an_opaque_400_is_surfaced_rather_than_blindly_retried(gateway, transpor
     assert len(transport["calls"]) == 1
 
 
-def test_a_gateway_that_rejects_response_format_falls_back_to_prompted_json(transport):
+def test_a_gateway_that_rejects_response_format_falls_back_to_prompted_json(
+    transport, monkeypatch
+):
+    monkeypatch.setenv("FASTLLM_JSON_SCHEMA", "1")
     transport["queue"].extend(
         [
             FakeResponse(400, text='{"error":"response_format is not supported"}'),
@@ -437,15 +446,105 @@ def test_registry_follows_stored_config():
     assert (name, model) == ("fastllm", "mistral-small")
 
 
-def test_chat_mode_defaults_per_provider_and_is_overridable():
+def test_all_models_use_app_tools_even_with_legacy_harness_config():
     from backend import db
 
-    assert registry.chat_mode("ulproxy", "gpt-5.2") == "harness"
+    assert registry.chat_mode("ulproxy", "gpt-5.2") == "structured"
     assert registry.chat_mode("fastllm", "mistral-small") == "structured"
     db.set_config({"chat_modes": {"fastllm:mistral-small": "harness"}})
-    assert registry.chat_mode("fastllm", "mistral-small") == "harness"
+    assert registry.chat_mode("fastllm", "mistral-small") == "structured"
 
 
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError):
         registry.get_provider("nope")
+
+
+# ---------------------------------------------------------------------------
+# SIS fastLLM: working around a harmony model served without a tool-call parser
+# ---------------------------------------------------------------------------
+
+def test_fastllm_puts_the_schema_in_the_prompt_for_gpt_oss_only(gateway, transport):
+    """Scoped to GPT-OSS, because the workaround breaks every other model.
+
+    For GPT-OSS the gateway accepts response_format, ignores it, and never
+    400s, so the base client's demotion never fires and only a prompt-bound
+    schema reaches the model. gemma is the mirror image: it honours
+    response_format and ignores a schema delivered as prose, answering in
+    Markdown instead -- which surfaced as a 502 on the parse-JD route."""
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA, model="GPT 120b")
+
+    body = transport["calls"][0]["body"]
+    assert "response_format" not in body
+    assert "JSON Schema" in body["messages"][0]["content"]
+
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA, model="gemma-4-31B-it")
+
+    body = transport["calls"][1]["body"]
+    assert body["response_format"]["json_schema"]["strict"] is True
+    assert not any("JSON Schema" in m["content"] for m in body["messages"])
+
+
+def test_fastllm_tells_only_harmony_models_to_answer_in_the_final_channel(
+    gateway, transport
+):
+    """Without this a GPT-OSS model ends its turn on a harmony tool call the
+    gateway cannot parse, and content comes back null with no tool_calls to
+    read. The other models here never speak harmony, so the suffix is only
+    instructions about a format they do not use."""
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA, system="Be helpful.", model="GPT 120b")
+
+    system = transport["calls"][0]["body"]["messages"][0]["content"]
+    assert "no callable functions" in system
+    assert "final channel" in system
+
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    FastLLMProvider().structured_extract("p", SCHEMA, system="Be helpful.", model="Maverick")
+
+    system = transport["calls"][1]["body"]["messages"][0]["content"]
+    assert "final channel" not in system
+
+
+def test_a_provider_with_a_healthy_tool_parser_keeps_its_prompt_untouched(transport):
+    """The workaround is scoped to fastLLM; the UL proxy must not inherit it."""
+    transport["queue"].append(completion('{"name":"a","score":1}'))
+    ULProxyProvider(default_model="m").structured_extract("p", SCHEMA, system="Be helpful.")
+
+    system = transport["calls"][0]["body"]["messages"][0]["content"]
+    assert "final channel" not in system
+
+
+def test_an_empty_completion_is_retried_with_a_different_seed(gateway, transport):
+    """The pinned seed makes failure as reproducible as scoring. Retrying the
+    identical body replayed the same empty reply until the budget ran out."""
+    transport["queue"].extend([completion(""), completion('{"name":"a","score":1}')])
+    result = FastLLMProvider().structured_extract("p", SCHEMA)
+
+    assert result == {"name": "a", "score": 1}
+    seeds = [call["body"]["seed"] for call in transport["calls"]]
+    assert seeds == [42, 1042]
+
+
+def test_a_prose_reply_where_json_was_asked_for_is_retried(gateway, transport):
+    """Leaked analysis ("We will call get_app_state.") arrives as a perfectly
+    non-empty reply. Failing the whole turn on it wastes a retry budget that
+    would have rescued it."""
+    transport["queue"].extend(
+        [completion("We will call get_app_state."), completion('{"name":"a","score":1}')]
+    )
+    result = FastLLMProvider().structured_extract("p", SCHEMA)
+
+    assert result == {"name": "a", "score": 1}
+    assert [call["body"]["seed"] for call in transport["calls"]] == [42, 1042]
+
+
+def test_prose_is_not_retried_when_no_schema_was_requested(transport):
+    """Free-text chat has no JSON to fail; the reply is the answer."""
+    transport["queue"].append(completion("Ada looks strongest."))
+    reply = ULProxyProvider(default_model="m").chat([{"role": "user", "content": "who?"}])
+
+    assert reply == "Ada looks strongest."
+    assert len(transport["calls"]) == 1
