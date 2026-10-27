@@ -195,3 +195,7 @@ cython_debug/
 # Project
 node_modules/
 data/
+
+# Playwright MCP browser-test scratch: page dumps, console logs and CSV exports
+# from manual UI runs. Not app code and not reproducible output worth tracking.
+.playwright-mcp/

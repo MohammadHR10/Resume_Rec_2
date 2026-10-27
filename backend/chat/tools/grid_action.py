@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from _common import argument_parser, emit, fail, load_snapshot, resolve_qual, workspace_dir
 
-SORTABLE = {"name", "rank", "required", "preferred", "ai"}
+SORTABLE = {"name", "rank", "required", "preferred", "ai", "summary"}
 
 
 def main() -> None:

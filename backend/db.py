@@ -137,6 +137,17 @@ CREATE TABLE IF NOT EXISTS chat_action (
 );
 CREATE INDEX IF NOT EXISTS idx_chataction_session ON chat_action(session_id);
 
+CREATE TABLE IF NOT EXISTS chat_proposal (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES chat_session(id) ON DELETE CASCADE,
+    tool TEXT NOT NULL,
+    label TEXT NOT NULL,
+    args TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS audit_run (
     id           TEXT PRIMARY KEY,
     screening_id TEXT REFERENCES screening(id) ON DELETE SET NULL,

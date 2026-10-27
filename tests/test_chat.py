@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import subprocess
 import sys
 
@@ -68,13 +67,14 @@ def screening(screening_id, quals):
 
 
 @pytest.fixture
-def ws(screening):
+def ws(screening, tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace, "WORKSPACE_ROOT", tmp_path)
     return workspace.build_workspace("test-session", screening, "1")
 
 
 def run_tool(ws_path, tool: str, *args) -> dict:
     completed = subprocess.run(
-        [sys.executable, str(ws_path / "tools" / tool), "--workspace", str(ws_path), *args],
+        [sys.executable, str(workspace.Path(structured.__file__).parent / "tools" / tool), "--workspace", str(ws_path), *args],
         capture_output=True,
         text=True,
         timeout=60,
@@ -87,11 +87,11 @@ def run_tool(ws_path, tool: str, *args) -> dict:
 # Workspace
 # ---------------------------------------------------------------------------
 
-def test_workspace_contains_the_snapshot_tools_and_brief(ws):
+def test_workspace_contains_scoped_snapshot_and_brief(ws):
     assert (ws / "snapshot.json").exists()
     assert (ws / "CHAT.md").exists()
-    assert (ws / "tools" / "whatif.py").exists()
-    assert (ws / "tools" / "_bootstrap.py").exists()
+    assert not (ws / "tools").exists()
+    assert not (ws / "screening.db").exists()
 
     snapshot = json.loads((ws / "snapshot.json").read_text(encoding="utf-8"))
     assert [q["label"] for q in snapshot["qualifications"]] == ["R1", "R2", "P1"]
@@ -104,18 +104,7 @@ def test_the_workspace_database_carries_no_credentials(screening):
     db.set_connection("fastllm", {"base_url": "https://gw.example", "api_key": "secret-token-42"})
     path = workspace.build_workspace("secrets-session", screening, "1")
 
-    copied = path / "screening.db"
-    assert copied.exists(), "the workspace should still get a database"
-
-    connection = sqlite3.connect(str(copied))
-    try:
-        assert connection.execute("SELECT COUNT(*) FROM config").fetchone()[0] == 0
-        # The audit trail it exists for is still there.
-        assert connection.execute("SELECT COUNT(*) FROM candidate").fetchone()[0] == 3
-    finally:
-        connection.close()
-
-    assert b"secret-token-42" not in copied.read_bytes()
+    assert not (path / "screening.db").exists()
     # The real database still has it.
     assert db.get_connection("fastllm")["api_key"] == "secret-token-42"
 
@@ -287,19 +276,20 @@ class ScriptedProvider:
 
     def chat(self, messages, *, schema=None, model=None, system=None, schema_name="Response"):
         self.seen.append(messages)
-        return self.turns.pop(0) if self.turns else {"tool_calls": [], "answer": "done"}
+        return self.turns.pop(0) if self.turns else {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "done"})}]}
 
 
 def test_structured_loop_runs_the_named_tool_and_feeds_the_result_back(ws):
     provider = ScriptedProvider(
         [
-            {"tool_calls": [{"tool": "whatif", "args_json": '{"remove_qual": ["R2"]}'}], "answer": ""},
-            {"tool_calls": [], "answer": "Carol would newly pass."},
+            {"tool_calls": [{"tool": "whatif", "args_json": '{"remove_qual": ["R2"]}'}]},
+            {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "Carol would newly pass."})}]},
         ]
     )
     result = structured.run_turn(provider, "m", ws, "brief", [], "what if we drop R2?")
     assert result["answer"] == "Carol would newly pass."
-    assert result["trace"] == [{"round": 1, "tool": "whatif", "args": {"remove_qual": ["R2"]}}]
+    assert result["trace"][0] == {"round": 1, "tool": "whatif", "args": {"remove_qual": ["R2"]}}
+    assert result["trace"][-1]["tool"] == "reply"
     # The second turn saw the real tool output, not a summary of it.
     fed_back = provider.seen[1][-1]["content"]
     assert "newly_passing" in fed_back and "Carol" in fed_back
@@ -308,8 +298,8 @@ def test_structured_loop_runs_the_named_tool_and_feeds_the_result_back(ws):
 def test_structured_loop_reports_an_unknown_tool_instead_of_crashing(ws):
     provider = ScriptedProvider(
         [
-            {"tool_calls": [{"tool": "delete_everything", "args_json": "{}"}], "answer": ""},
-            {"tool_calls": [], "answer": "I cannot do that."},
+            {"tool_calls": [{"tool": "delete_everything", "args_json": "{}"}]},
+            {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "I cannot do that."})}]},
         ]
     )
     result = structured.run_turn(provider, "m", ws, "brief", [], "drop the database")
@@ -329,7 +319,7 @@ def test_structured_loop_recovers_from_one_unreadable_turn(ws):
             self.last = messages
             if self.calls == 1:
                 raise LLMError("the model's reply was not valid JSON")
-            return {"tool_calls": [], "answer": "Recovered."}
+            return {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "Recovered."})}]}
 
     provider = FlakyProvider()
     result = structured.run_turn(provider, "m", ws, "brief", [], "why did 3 fail?")
@@ -347,7 +337,7 @@ def test_structured_loop_gives_up_cleanly_when_every_turn_is_unreadable(ws):
 
 
 def test_structured_loop_nudges_a_model_that_says_nothing(ws):
-    provider = ScriptedProvider([{"tool_calls": [], "answer": ""}, {"tool_calls": [], "answer": "Here."}])
+    provider = ScriptedProvider([{"tool_calls": []}, {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "Here."})}]}])
     assert structured.run_turn(provider, "m", ws, "brief", [], "hi")["answer"] == "Here."
 
 
@@ -405,53 +395,26 @@ def test_an_adapter_that_is_not_installed_says_so(monkeypatch):
         codex_cli.run_turn(workspace=".", question="hi")
 
 
-def test_a_failed_harness_turn_degrades_to_structured(monkeypatch, screening):
-    provider = ScriptedProvider([{"tool_calls": [], "answer": "Structured answered instead."}])
+def test_legacy_harness_configuration_cannot_launch_a_cli(monkeypatch, screening):
+    from backend.chat import adapters
+    provider = ScriptedProvider([{"tool_calls": [{"tool": "reply", "args_json": '{"message":"Tools only."}'}]}])
     monkeypatch.setattr(chat_session.registry, "active", lambda: (provider, "ulproxy", "m"))
     monkeypatch.setattr(chat_session.registry, "chat_mode", lambda *_a: "harness")
-
-    class BrokenAdapter:
-        @staticmethod
-        def run_turn(**_kwargs):
-            raise RuntimeError("claude CLI is not installed in this container")
-
-    monkeypatch.setattr(chat_session, "get_adapter", lambda _name: BrokenAdapter)
-
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("A restricted chat must never load a CLI adapter")
+    monkeypatch.setattr(adapters, "get_adapter", forbidden)
     session = chat_session.get_or_create_session(screening, "1")
-    result = chat_session.ask(session["id"], "why is Alice first?")
-
+    result = chat_session.ask(session["id"], "hello")
     assert result["mode"] == "structured"
-    assert "not installed" in result["degradedFrom"]
-    assert result["answer"] == "Structured answered instead."
-
-
-def test_a_successful_harness_turn_keeps_its_session_id(monkeypatch, screening):
-    monkeypatch.setattr(chat_session.registry, "active", lambda: (object(), "ulproxy", "m"))
-    monkeypatch.setattr(chat_session.registry, "chat_mode", lambda *_a: "harness")
-
-    class Adapter:
-        @staticmethod
-        def run_turn(**kwargs):
-            assert kwargs["workspace"]
-            assert "Qualifications" in kwargs["brief"]
-            return {"text": "Alice meets everything.", "harness_sid": "thread-123"}
-
-    monkeypatch.setattr(chat_session, "get_adapter", lambda _name: Adapter)
-
-    session = chat_session.get_or_create_session(screening, "1")
-    result = chat_session.ask(session["id"], "why is Alice first?")
-
-    assert result["mode"] == "harness"
-    assert result["degradedFrom"] == ""
-    stored = db.query_one("SELECT harness_sid FROM chat_session WHERE id=?", (session["id"],))
-    assert stored["harness_sid"] == "thread-123"
+    assert result["answer"] == "Tools only."
+    assert db.query_one("SELECT harness_sid FROM chat_session WHERE id=?", (session["id"],))["harness_sid"] == ""
 
 
 def test_grid_actions_queued_by_a_turn_reach_the_action_endpoint(monkeypatch, screening):
     provider = ScriptedProvider(
         [
-            {"tool_calls": [{"tool": "grid_action", "args_json": '{"sort": "required:desc"}'}], "answer": ""},
-            {"tool_calls": [], "answer": "Sorted by required coverage."},
+            {"tool_calls": [{"tool": "grid_action", "args_json": '{"sort": "required:desc"}'}]},
+            {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "Sorted by required coverage."})}]},
         ]
     )
     monkeypatch.setattr(chat_session.registry, "active", lambda: (provider, "ulproxy", "m"))

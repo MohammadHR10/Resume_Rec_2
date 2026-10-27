@@ -315,83 +315,13 @@ function providerCard(config: AppConfig): HTMLElement {
   return column;
 }
 
-function chatCard(config: AppConfig): HTMLElement {
+function chatCard(_config: AppConfig): HTMLElement {
   const column = el("div", "col-lg-6");
-  const card = el("div", "card h-100");
-  card.appendChild(el("div", "card-header fw-semibold", "Chat mode for this model"));
-  const body = el("div", "card-body");
-
-  body.appendChild(
-    el(
-      "p",
-      "text-muted small",
-      "How the assistant answers questions about a screening. Both modes reach the same information and can sort and filter the grid — the difference is who decides what to look at.",
-    ),
-  );
-
-  // "harness" and "structured" describe the plumbing. These describe what a
-  // reviewer gets, which is what they are choosing between.
-  const MODES: { value: string; label: string; help: string }[] = [
-    {
-      value: "structured",
-      label: "Guided — the app runs a fixed set of analyses",
-      help: "The assistant picks from a set list of questions the app knows how to answer: compare two candidates, summarise a stage, recalculate without a qualification. Predictable, and works with every model.",
-    },
-    {
-      value: "harness",
-      label: "Independent — the assistant explores the data itself",
-      help: "The assistant works directly with a copy of the screening and decides what to examine, so it can follow up on its own findings. Needs a capable model and the agent tooling installed; if either is missing it falls back to Guided for that question and tells you.",
-    },
-  ];
-
-  const modeSelect = el("select", "form-select") as HTMLSelectElement;
-  for (const mode of MODES) {
-    const option = el("option", "", escapeHtml(mode.label)) as HTMLOptionElement;
-    option.value = mode.value;
-    option.selected = mode.value === config.chatMode;
-    modeSelect.appendChild(option);
-  }
-  body.appendChild(
-    labelled(`Mode for ${config.provider} / ${config.model || "(no model)"}`, modeSelect),
-  );
-
-  const modeHelp = el("div", "form-text mb-3");
-  const describeMode = () => {
-    modeHelp.textContent = MODES.find((m) => m.value === modeSelect.value)?.help ?? "";
-  };
-  modeSelect.addEventListener("change", describeMode);
-  describeMode();
-  body.appendChild(modeHelp);
-
-  const cliSelect = el("select", "form-select") as HTMLSelectElement;
-  for (const adapter of config.adapters) {
-    const option = el(
-      "option",
-      "",
-      `${adapter.name}${adapter.available ? "" : " — not installed"}`,
-    ) as HTMLOptionElement;
-    option.value = adapter.name;
-    option.selected = adapter.name === config.harnessCli;
-    cliSelect.appendChild(option);
-  }
-  body.appendChild(labelled("Harness CLI", cliSelect));
-
-  const save = el("button", "btn btn-primary mt-3", "Save chat settings") as HTMLButtonElement;
-  save.addEventListener("click", async () => {
-    const done = busy(save, "Saving…");
-    try {
-      await saveConfig({ chatMode: modeSelect.value, harnessCli: cliSelect.value });
-      notify("Chat settings saved.", "success");
-    } catch (error) {
-      notify(`Could not save: ${(error as Error).message}`, "danger");
-    } finally {
-      done();
-    }
-  });
-  body.appendChild(save);
-
-  card.appendChild(body);
-  column.appendChild(card);
+  column.innerHTML = `<div class="card h-100">
+    <div class="card-header fw-semibold">Assistant controls</div>
+    <div class="card-body"><p>The assistant uses app tools to inspect candidates, control the view,
+    and prepare workflow changes.</p><p class="mb-0">Review and apply proposed changes in chat.
+    Candidate moves always require your approval.</p></div></div>`;
   return column;
 }
 

@@ -70,11 +70,9 @@ class StubProvider:
         self.chat_calls.append({"messages": messages, "system": system})
         if len(self.chat_calls) == 1:
             return {
-                "reasoning": "look at the stage",
-                "tool_calls": [{"tool": "stage_stats", "args_json": '{"stage": "1"}'}],
-                "answer": "",
+                "tool_calls": [{"tool": "analyze_candidates", "args_json": '{"where":{"all":[{"field":"stage","value":"1"}]}}'}],
             }
-        return {"reasoning": "done", "tool_calls": [], "answer": "Everyone met every requirement."}
+        return {"tool_calls": [{"tool": "reply", "args_json": json.dumps({"message": "Everyone met every requirement."})}]}
 
 
 @pytest.fixture
@@ -533,7 +531,7 @@ def test_structured_chat_runs_a_real_tool_and_answers(client, stub):
     payload = response.json()
     assert payload["mode"] == "structured"
     assert payload["answer"] == "Everyone met every requirement."
-    assert payload["trace"][0]["tool"] == "stage_stats"
+    assert payload["trace"][0]["tool"] == "analyze_candidates"
 
     transcript = client.get(f"/api/screenings/{screening_id}/chat/1").json()["messages"]
     assert [m["role"] for m in transcript] == ["user", "assistant"]

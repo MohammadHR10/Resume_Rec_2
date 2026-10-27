@@ -2,6 +2,7 @@ import type {
   AppConfig,
   AuditRun,
   ChatMessage,
+  ChatProposal,
   ChatTurn,
   GridAction,
   Qualification,
@@ -146,15 +147,39 @@ export const exportUrl = (id: string, stage: Stage, format: "xlsx" | "csv") =>
 // -- chat -------------------------------------------------------------------
 
 export const getChat = (id: string, stage: Stage) =>
-  request<{ sessionId: string; mode: string; provider: string; model: string; messages: ChatMessage[] }>(
+  request<{ sessionId: string; mode: string; provider: string; model: string; messages: ChatMessage[]; proposals: ChatProposal[]; actionCursor: number }>(
     `/api/screenings/${id}/chat/${stage}`,
   );
 
-export const askChat = (id: string, stage: Stage, question: string) =>
-  request<ChatTurn>(`/api/screenings/${id}/chat/${stage}`, json("POST", { question }));
+export const askChat = (id: string, stage: Stage, question: string) => {
+  let view = null;
+  try { view = JSON.parse(localStorage.getItem(`screening-view:${id}:${stage}`) ?? "null"); } catch { /* No view available. */ }
+  return request<ChatTurn>(`/api/screenings/${id}/chat/${stage}`, json("POST", { question, view }));
+};
 
 export const chatActions = (sessionId: string, since: number) =>
   request<{ actions: GridAction[] }>(`/api/chat/${sessionId}/actions?since=${since}`);
+
+export const resolveProposal = (sessionId: string, proposalId: string, approve: boolean) =>
+  request<{ status: string; tool?: string; result?: { id?: string; screeningId?: string; jobId?: string } }>(
+    `/api/chat/${sessionId}/proposals/${proposalId}`, json("POST", { approve }));
+
+const actionCursors = new Map<string, number>();
+const actionChains = new Map<string, Promise<void>>();
+export function initializeActionCursor(sessionId: string, cursor: number): void {
+  actionCursors.set(sessionId, Math.max(actionCursors.get(sessionId) ?? 0, cursor));
+}
+
+export async function consumeAction(sessionId: string, action: GridAction,
+  handler: (action: GridAction) => void | Promise<void>): Promise<void> {
+  const next = (actionChains.get(sessionId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    if (action.id <= (actionCursors.get(sessionId) ?? 0)) return;
+    actionCursors.set(sessionId, action.id);
+    await handler(action);
+  });
+  actionChains.set(sessionId, next);
+  await next;
+}
 
 /** Watch a chat session's action queue and apply what it emits.
  *
@@ -164,39 +189,22 @@ export const chatActions = (sessionId: string, since: number) =>
  */
 export function followGridActions(
   sessionId: string,
-  onAction: (action: GridAction) => void,
+  onAction: (action: GridAction) => void | Promise<void>,
   intervalMs = 2000,
 ): () => void {
-  let since = 0;
   let stopped = false;
-
-  // Start past whatever is already queued: those were applied when they were
-  // answered, and replaying them would fight the user's own sorting.
-  void chatActions(sessionId, 0)
-    .then((data) => {
-      since = data.actions.reduce((max, action) => Math.max(max, action.id), 0);
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      const tick = async () => {
-        if (stopped) return;
-        try {
-          const data = await chatActions(sessionId, since);
-          for (const action of data.actions) {
-            since = Math.max(since, action.id);
-            onAction(action);
-          }
-        } catch {
-          /* a hiccup should not end the watch */
-        }
-        if (!stopped) window.setTimeout(tick, intervalMs);
-      };
-      void tick();
-    });
-
-  return () => {
-    stopped = true;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const data = await chatActions(sessionId, actionCursors.get(sessionId) ?? 0);
+      for (const action of data.actions) {
+        await consumeAction(sessionId, action, onAction);
+      }
+    } catch { /* Retry polling after transient failures. */ }
+    if (!stopped) window.setTimeout(tick, intervalMs);
   };
+  window.setTimeout(tick, intervalMs);
+  return () => { stopped = true; };
 }
 
 // -- bias audit -------------------------------------------------------------

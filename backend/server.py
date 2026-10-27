@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from . import audit, db, export, jd_parse
 from .chat import session as chat_session
+from .chat import app_tools
 from .extraction import (
     extract_text_from_bytes,
     extract_text_from_docx,
@@ -214,8 +215,6 @@ def _source(stored: str, effective: str) -> str:
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
-    from .chat.adapters import available_adapters
-
     cfg = db.get_config()
     _, provider_name, model = registry.active()
     return {
@@ -224,10 +223,10 @@ def get_config() -> dict[str, Any]:
         "provider": cfg.get("provider"),
         "model": cfg.get("model"),
         "chatMode": registry.chat_mode(provider_name, model),
-        "chatModes": cfg.get("chat_modes") or {},
-        "harnessCli": cfg.get("harness_cli") or chat_session.DEFAULT_HARNESS.get(provider_name, ""),
+        "chatModes": {key: "structured" for key in (cfg.get("chat_modes") or {})},
+        "harnessCli": "",
         "auditThresholds": cfg.get("audit_thresholds"),
-        "adapters": available_adapters(),
+        "adapters": [],
     }
 
 
@@ -243,15 +242,16 @@ def update_config(body: ConfigUpdate) -> dict[str, Any]:
     if body.model is not None:
         updates["model"] = body.model
     if body.chatMode is not None:
-        if body.chatMode not in ("harness", "structured"):
-            raise HTTPException(status_code=400, detail="chatMode must be harness or structured")
+        if body.chatMode != "structured":
+            raise HTTPException(status_code=400, detail="Chat uses app tools only; CLI harness mode is disabled")
         modes = dict(cfg.get("chat_modes") or {})
         provider = updates.get("provider", cfg.get("provider"))
         model = updates.get("model", cfg.get("model"))
         modes[f"{provider}:{model}"] = body.chatMode
         updates["chat_modes"] = modes
     if body.harnessCli is not None:
-        updates["harness_cli"] = body.harnessCli
+        if body.harnessCli:
+            raise HTTPException(400, "CLI harness mode is disabled")
     if body.auditThresholds is not None:
         updates["audit_thresholds"] = {
             **(cfg.get("audit_thresholds") or {}),
@@ -398,6 +398,9 @@ async def parse_jd(screening_id: str, file: UploadFile = File(...)) -> dict[str,
         + [{"text": t, "kind": "preferred"} for t in parsed["preferred"]],
     )
 
+    db.execute("DELETE FROM evaluation WHERE screening_id=?", (screening_id,))
+    db.execute("UPDATE screening SET status='draft' WHERE id=?", (screening_id,))
+
     qualifications = _qual_payload(screening_id)
     return {
         "jobTitle": parsed["job_title"],
@@ -464,15 +467,14 @@ def get_qualifications(screening_id: str) -> dict[str, Any]:
 def update_qualifications(screening_id: str, body: QualificationsUpdate) -> dict[str, Any]:
     _screening_or_404(screening_id)
 
-    existing = {q["text"]: q["kind"] for q in load_qualifications(screening_id)}
-    incoming = {q.text.strip(): q.kind for q in body.qualifications if q.text.strip()}
+    existing = [(q["text"], q["kind"]) for q in load_qualifications(screening_id)]
+    incoming = [(q.text.strip(), q.kind) for q in body.qualifications if q.text.strip()]
     changed = existing != incoming
 
-    _replace_qualifications(
-        screening_id, [{"text": q.text, "kind": q.kind} for q in body.qualifications]
-    )
-
     if changed:
+        _replace_qualifications(
+            screening_id, [{"text": q.text, "kind": q.kind} for q in body.qualifications]
+        )
         # Verdicts are per-qualification-id; a changed checklist makes the old
         # ones unreadable, so they go rather than being silently mismapped.
         removed = db.query(
@@ -675,58 +677,43 @@ def stage_action(screening_id: str, stage: str, body: StageAction) -> dict[str, 
     if body.action not in ("promote", "reject", "restore"):
         raise HTTPException(status_code=400, detail="action must be promote, reject or restore")
 
+    if not body.candidateIds or len(body.candidateIds) != len(set(body.candidateIds)):
+        raise HTTPException(400, "Select unique candidate IDs")
+    valid_actions = {"1": {"promote", "reject"}, "2": {"promote", "reject"},
+                     "3": {"reject"}, "rejected": {"restore"}}
+    if body.action not in valid_actions[stage]:
+        raise HTTPException(400, "That action is unavailable in this stage")
+
     moved = []
-    for candidate_id in body.candidateIds:
-        current = db.query_one(
-            "SELECT COALESCE(s.stage,'1') AS stage, e.ai_pass FROM candidate c "
-            "LEFT JOIN stage_state s ON s.candidate_id=c.id "
-            "LEFT JOIN evaluation e ON e.candidate_id=c.id "
-            "WHERE c.id=? AND c.screening_id=?",
-            (candidate_id, screening_id),
-        )
-        if not current:
-            continue
-        from_stage = str(current["stage"])
-
-        if body.action == "promote":
-            to_stage = NEXT_STAGE.get(from_stage)
-            if not to_stage:
-                continue  # already in the final stage, or rejected
-        elif body.action == "reject":
-            to_stage = "rejected"
-        else:
-            to_stage = "1"
-
-        # An override is the human disagreeing with the AI, and it is the thing
-        # the audit trail exists to record: promoting a candidate the model
-        # failed, or rejecting one it passed.
-        ai_pass = bool(current["ai_pass"])
-        override = (body.action == "promote" and from_stage == "1" and not ai_pass) or (
-            body.action == "reject" and from_stage == "1" and ai_pass
-        )
-
-        db.execute(
-            "INSERT INTO stage_state (candidate_id, screening_id, stage, updated_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(candidate_id) DO UPDATE SET stage=excluded.stage, updated_at=excluded.updated_at",
-            (candidate_id, screening_id, to_stage, db.now()),
-        )
-        db.execute(
-            "INSERT INTO stage_action (id, screening_id, candidate_id, from_stage, to_stage, action, "
-            "override, actor, note, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                db.new_id(),
-                screening_id,
-                candidate_id,
-                from_stage,
-                to_stage,
-                body.action,
-                1 if override else 0,
-                "user",
-                body.note,
-                db.now(),
-            ),
-        )
-        moved.append({"candidateId": candidate_id, "from": from_stage, "to": to_stage, "override": override})
+    with db.cursor() as cur:
+        # Validate the whole selection and move it atomically. A stale grid or
+        # another tab cannot silently promote a person for a second time.
+        cur.execute("BEGIN IMMEDIATE")
+        selected = []
+        for candidate_id in body.candidateIds:
+            current = cur.execute(
+                "SELECT COALESCE(s.stage,'1') AS stage, e.ai_pass FROM candidate c "
+                "LEFT JOIN stage_state s ON s.candidate_id=c.id "
+                "LEFT JOIN evaluation e ON e.candidate_id=c.id "
+                "WHERE c.id=? AND c.screening_id=?", (candidate_id, screening_id)
+            ).fetchone()
+            if not current or str(current["stage"]) != stage:
+                raise HTTPException(409, "The candidate selection changed. Refresh this stage and try again.")
+            selected.append((candidate_id, bool(current["ai_pass"])))
+        to_stage = NEXT_STAGE[stage] if body.action == "promote" else "rejected" if body.action == "reject" else "1"
+        for candidate_id, ai_pass in selected:
+            override = stage == "1" and ((body.action == "promote" and not ai_pass) or (body.action == "reject" and ai_pass))
+            cur.execute(
+                "INSERT INTO stage_state (candidate_id,screening_id,stage,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(candidate_id) DO UPDATE SET stage=excluded.stage,updated_at=excluded.updated_at",
+                (candidate_id, screening_id, to_stage, db.now()),
+            )
+            cur.execute(
+                "INSERT INTO stage_action (id,screening_id,candidate_id,from_stage,to_stage,action,override,actor,note,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (db.new_id(), screening_id, candidate_id, stage, to_stage, body.action, int(override), "user", body.note, db.now()),
+            )
+            moved.append({"candidateId": candidate_id, "from": stage, "to": to_stage, "override": override})
 
     return {"moved": moved, "stageCounts": _stage_counts(screening_id)}
 
@@ -772,6 +759,7 @@ def export_stage(screening_id: str, stage: str, format: str = "xlsx") -> Respons
 
 class ChatMessage(BaseModel):
     question: str
+    view: dict[str, Any] | None = None
 
 
 @app.get("/api/screenings/{screening_id}/chat/{stage}")
@@ -787,6 +775,8 @@ def get_chat(screening_id: str, stage: str) -> dict[str, Any]:
         "provider": provider_name,
         "model": model,
         "messages": chat_session.transcript(session["id"]),
+        "proposals": app_tools.proposals(session["id"]),
+        "actionCursor": max((a["id"] for a in chat_session.pending_actions(session["id"])), default=0),
     }
 
 
@@ -798,7 +788,7 @@ async def post_chat(screening_id: str, stage: str, body: ChatMessage) -> dict[st
     session = chat_session.get_or_create_session(screening_id, stage)
     try:
         result = await asyncio.get_event_loop().run_in_executor(
-            None, chat_session.ask, session["id"], body.question
+            None, chat_session.ask, session["id"], body.question, body.view
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -810,6 +800,16 @@ async def post_chat(screening_id: str, stage: str, body: ChatMessage) -> dict[st
 @app.get("/api/chat/{session_id}/actions")
 def chat_actions(session_id: str, since: int = Query(default=0, ge=0)) -> dict[str, Any]:
     return {"actions": chat_session.pending_actions(session_id, since)}
+
+
+class ProposalDecision(BaseModel):
+    approve: bool
+
+
+@app.post("/api/chat/{session_id}/proposals/{proposal_id}")
+async def resolve_chat_proposal(session_id: str, proposal_id: str, body: ProposalDecision) -> dict[str, Any]:
+    from .chat.app_tools import resolve
+    return await resolve(session_id, proposal_id, body.approve)
 
 
 # ---------------------------------------------------------------------------

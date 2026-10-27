@@ -264,6 +264,23 @@ class OpenAICompatibleProvider(LLMProvider):
         """Additional top-level body parameters on every completion."""
         return {}
 
+    def adjust_system(self, system_text: str, *, structured: bool) -> str:
+        """Last word on the system prompt, per provider.
+
+        A serving stack can need an instruction the prompt author has no reason
+        to write — see the harmony note on ``FastLLMProvider``. Returning the
+        text unchanged is the right behaviour for a well-behaved endpoint.
+        """
+        return system_text
+
+    def vary_on_retry(self, body: dict[str, Any], attempt: int) -> None:
+        """Perturb the next attempt in place, for providers pinned to a seed.
+
+        Retrying a deterministic request reproduces the failure exactly, so a
+        provider that pins ``seed`` has to move it or spend its whole retry
+        budget re-reading the same answer.
+        """
+
     def completions_url(self) -> str:
         return f"{self.root}{self.api_root_suffix}/chat/completions"
 
@@ -351,6 +368,7 @@ class OpenAICompatibleProvider(LLMProvider):
         sys_text = system or ""
         if strict_schema and not self.supports_json_schema:
             sys_text = _json_instruction(sys_text, strict_schema)
+        sys_text = self.adjust_system(sys_text, structured=strict_schema is not None)
 
         body: dict[str, Any] = {
             "model": use_model,
@@ -389,6 +407,7 @@ class OpenAICompatibleProvider(LLMProvider):
             except requests.RequestException as exc:
                 last_error = f"connection error: {exc}"
                 if attempt < MAX_RETRIES:
+                    self.vary_on_retry(body, attempt)
                     self._backoff(attempt, last_error)
                     continue
                 raise LLMError(f"{self.label}: {last_error}") from exc
@@ -396,6 +415,7 @@ class OpenAICompatibleProvider(LLMProvider):
             if resp.status_code == 429 or resp.status_code >= 500:
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 if attempt < MAX_RETRIES:
+                    self.vary_on_retry(body, attempt)
                     self._backoff(attempt, last_error)
                     continue
                 raise LLMError(f"{self.label}: {last_error}")
@@ -457,6 +477,7 @@ class OpenAICompatibleProvider(LLMProvider):
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 last_error = f"malformed response: {exc}"
                 if attempt < MAX_RETRIES:
+                    self.vary_on_retry(body, attempt)
                     self._backoff(attempt, last_error)
                     continue
                 raise LLMError(f"{self.label}: {last_error}") from exc
@@ -464,9 +485,27 @@ class OpenAICompatibleProvider(LLMProvider):
             if not content:
                 last_error = "empty completion"
                 if attempt < MAX_RETRIES:
+                    self.vary_on_retry(body, attempt)
                     self._backoff(attempt, last_error)
                     continue
                 raise LLMError(f"{self.label}: {last_error}")
+
+            # A reply that is prose where JSON was asked for is as retryable as
+            # an empty one, and for the same underlying reason: it is the
+            # model's analysis leaking out where its answer belongs. Validating
+            # here rather than in the caller is what puts it inside the retry
+            # loop, so a fresh draw can rescue the turn. The caller re-parses
+            # the text it gets back; on a reply this size that costs nothing.
+            if strict_schema is not None:
+                try:
+                    parse_json_loose(content)
+                except LLMError:
+                    last_error = "unparseable reply"
+                    if attempt < MAX_RETRIES:
+                        self.vary_on_retry(body, attempt)
+                        self._backoff(attempt, last_error)
+                        continue
+                    raise
 
             return content
 

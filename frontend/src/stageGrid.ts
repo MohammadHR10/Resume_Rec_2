@@ -128,11 +128,29 @@ export class StageGrid {
         getRowId: (params) => params.data.id,
         tooltipShowDelay: 200,
         localeText: { noRowsToShow: "No candidates in this stage yet." },
+        onSelectionChanged: () => this.rememberView(),
+        onSortChanged: () => this.rememberView(),
+        onFilterChanged: () => this.rememberView(),
       });
     } else {
       this.api.setGridOption("columnDefs", this.columns());
       this.api.setGridOption("rowData", this.candidates);
     }
+    this.rememberView();
+  }
+
+  private rememberView(): void {
+    if (!this.api || this.api.isDestroyed()) return;
+    const visible: string[] = [];
+    this.api.forEachNodeAfterFilterAndSort(node => { if (node.id) visible.push(node.id); });
+    try {
+      localStorage.setItem(`screening-view:${this.screeningId}:${this.stage}`, JSON.stringify({
+        selectedCandidateIds: this.api.getSelectedRows().map(row => row.id),
+        visibleCandidateIds: visible,
+        sort: this.api.getColumnState().filter(c => c.sort).map(c => ({ column: c.colId, direction: c.sort })),
+        filters: this.api.getFilterModel(),
+      }));
+    } catch { /* The app still works when browser storage is unavailable. */ }
   }
 
   // -- columns --------------------------------------------------------------
@@ -384,6 +402,20 @@ export class StageGrid {
 
   // -- chat-driven grid control --------------------------------------------
 
+  applyAppAction(action: GridAction): void {
+    const args = action.args ?? {};
+    if (action.tool === "select_candidates") {
+      const ids = new Set(args.candidateIds ?? []);
+      this.api?.forEachNode(node => node.setSelected(ids.has(node.id ?? "")));
+    }
+    if (action.tool === "show_evidence") {
+      const candidate = this.candidates.find(c => c.id === args.candidateId);
+      const qualification = this.qualifications.find(q => q.id === args.qualification);
+      if (!candidate || !qualification) throw new Error("The candidate or qualification is no longer in this stage.");
+      this.showVerdictDetail(candidate, qualification);
+    }
+  }
+
   applyGridAction(action: GridAction): void {
     if (!this.api) return;
     if (action.clear) {
@@ -391,6 +423,7 @@ export class StageGrid {
       this.api.setFilterModel(null);
     }
     if (action.sort) {
+      this.api.setColumnsVisible([action.sort.column], true);
       this.api.applyColumnState({
         state: [{ colId: action.sort.column, sort: action.sort.direction }],
         defaultState: { sort: null },
@@ -399,7 +432,9 @@ export class StageGrid {
     if (action.filters?.length) {
       const model: Record<string, unknown> = {};
       for (const filter of action.filters) {
-        model[filter.column] = {
+        model[filter.column] = filter.column === "rank" ? {
+          filterType: "number", type: "equals", filter: Number(filter.value),
+        } : {
           filterType: "text",
           type: "contains",
           filter: filter.value,

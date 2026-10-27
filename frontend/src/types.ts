@@ -117,6 +117,20 @@ export interface GridAction {
   clear?: boolean;
   sort?: { column: string; direction: "asc" | "desc" };
   filters?: { column: string; value: string }[];
+  tool?: string;
+  screeningId?: string;
+  args?: { page?: string; stage?: Stage; screeningId?: string; candidateIds?: string[];
+    candidateId?: string; qualification?: string; format?: "xlsx" | "csv";
+    panel?: string; open?: boolean; kind?: string; jobId?: string };
+}
+
+export interface ChatProposal {
+  id: string;
+  tool: string;
+  label: string;
+  args: Record<string, unknown>;
+  status: string;
+  result: Record<string, unknown>;
 }
 
 export interface ChatTurn {
@@ -125,6 +139,7 @@ export interface ChatTurn {
   mode: string;
   degradedFrom: string;
   actions: GridAction[];
+  proposals: ChatProposal[];
   trace: { round: number; tool: string; args: Record<string, unknown> }[];
   model: string;
   provider: string;

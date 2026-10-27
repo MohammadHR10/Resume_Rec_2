@@ -43,21 +43,31 @@ Each stage has a chat panel that handles open-ended questions, not just canned c
 - *"What happens to the list if we drop the degree requirement?"*
 - *"Sort by preferred coverage, highest first."* — chat can drive the grid.
 
-It runs in one of two modes, per model, set on the Configuration page:
+The built-in agent uses an allowlisted app-tool loop for every provider and model.
+It has no shell, filesystem, SQL, arbitrary HTTP or CLI-agent access. Even explanations
+are emitted through the `reply` tool; malformed calls and prose-only responses are rejected.
+Legacy Independent-mode settings cannot enable a CLI.
 
-- **Guided** — the app runs a fixed set of analyses on the assistant's behalf. Predictable,
-  and works with every model.
-- **Independent** — a CLI agent (`claude` or `codex`) works inside a scoped workspace holding
-  a snapshot of the screening and the analysis tools, deciding for itself what to examine.
-  Needs a capable model and the CLI installed.
+The agent can inspect screening state and promotion history, run deterministic analyses,
+sort/filter grids, select candidates, open evidence, switch stages/pages, show/hide panels,
+offer exports and file choosers, and prepare checklist, candidate, evaluation, screening,
+model and audit changes. The current grid selection is available in the main and pop-out chat.
 
-Both modes call the *same* tool scripts, and those scripts import the same ranking and rollup
-code the grid uses — so *"what if we drop this qualification"* is a real recompute, not a
-guess. An Independent turn that fails falls back to Guided for that question and says so.
+Applicant questions use three flexible read-only tools: `find_candidates` combines filters,
+`read_candidate` reads extracted source text and recorded verdict explanations (including
+batch reads), and `analyze_candidates` compares custom groups with complete counts and explicit
+overlaps. For example: *“Who has R2 marked Partial, and what does their resume actually say?”*
+or *“Compare those who meet all required qualifications with those meeting two preferred ones.”*
+See [applicant research examples](docs/candidate-research.md) for the query shapes and paging rules.
 
-The panel collapses to a tab on the right edge to give the grid full width, or pops out into
-its own window — grid actions travel through the backend, so a question asked in the popped-out
-window still sorts and filters the grid in the main one.
+Data changes appear as review cards with **Apply change** and **Cancel** controls.
+The model cannot approve its own proposals. Changes are checked again when applied;
+stale proposals and duplicate approvals are rejected. Credentials stay on Configuration,
+and local files are selected by the reviewer in a file chooser.
+
+Analysis tools import the same ranking and rollup code as the grid. UI actions travel through
+the backend with stable IDs, so pop-out chat can control the main window without replaying
+actions. See [the tool catalog](docs/agent-tools.md) for capabilities and boundaries.
 
 ## Bias audit
 
@@ -162,7 +172,7 @@ python -m pytest
 
 Covers the deterministic half: rollups, ranking, stage gating, corpus composition and integrity,
 JD-parse and verdict handling, provider clients against mocked HTTP, the chat tools, the
-structured loop, harness degradation, and export layout. No test makes a real LLM call —
+tool-only loop, human approvals, app controls, and export layout. No test makes a real LLM call —
 verdict quality is validated by hand against the corpus and a real position description.
 
 ## Known limitations
@@ -172,9 +182,6 @@ verdict quality is validated by hand against the corpus and a real position desc
   `LLM_GATEWAY_URL` and `LLM_GATEWAY_KEY` should be all that is needed. Model *listing* is
   unproven — the old client never listed models, so `/v1/models` may 404, in which case the
   Configuration page falls back to a free-text model field.
-- **Neither CLI harness is installed in the image**, so `harness` chat mode currently degrades
-  to `structured` on every turn (visibly, in the UI). Adding `claude` or `codex` to the
-  Dockerfile and pointing it at the proxy is all that is missing.
 - **Scanned PDFs need OCR first** — text extraction is text-layer only, and a resume with no
   extractable text is reported as skipped rather than silently evaluated as empty.
 

@@ -20,7 +20,7 @@ import { renderConfigPage } from "./configPage.ts";
 import { JdIntake, initJdDropzone } from "./jdIntake.ts";
 import { showProgress } from "./progress.ts";
 import { StageGrid } from "./stageGrid.ts";
-import type { ScreeningDetail, Stage } from "./types.ts";
+import type { GridAction, ScreeningDetail, Stage } from "./types.ts";
 import { UploadForm } from "./uploadForm.ts";
 import {
   busy,
@@ -60,7 +60,7 @@ function route(): void {
   if (section === "config") return void renderConfigPage(view());
   if (section === "audit") return void renderAuditPage(view());
   if (section === "chat" && id) return void renderChatWindow(view(), id, hash.split("/")[2]);
-  if (section === "screening" && id) return void renderScreening(view(), id);
+  if (section === "screening" && id) return void renderScreening(view(), id, hash.split("/")[2] as Stage);
   return void renderScreeningList(view());
 }
 
@@ -70,6 +70,7 @@ function route(): void {
  * action queue, so asking here still sorts the grid over there.
  */
 async function renderChatWindow(root: HTMLElement, screeningId: string, stage: string): Promise<void> {
+  root.innerHTML = "";
   document.querySelector("nav")?.classList.add("d-none");
   root.className = "vh-100 d-flex flex-column";
   const host = el("div", "flex-grow-1 overflow-hidden");
@@ -83,6 +84,16 @@ async function renderChatWindow(root: HTMLElement, screeningId: string, stage: s
 
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("storage", (event) => {
+  if (event.key !== "screening-uploaded" || !event.newValue) return;
+  try {
+    const id = JSON.parse(event.newValue).screeningId;
+    if (window.location.hash.split("/")[2] === id) {
+      if (JSON.parse(event.newValue).deleted) window.location.hash = "#/";
+      else window.dispatchEvent(new HashChangeEvent("hashchange"));
+    }
+  } catch { /* Ignore unrelated browser storage. */ }
+});
 
 // ---------------------------------------------------------------------------
 // Screening list
@@ -165,7 +176,7 @@ async function renderScreeningList(root: HTMLElement): Promise<void> {
 // Screening workflow
 // ---------------------------------------------------------------------------
 
-async function renderScreening(root: HTMLElement, screeningId: string): Promise<void> {
+async function renderScreening(root: HTMLElement, screeningId: string, initialStage: Stage = "1"): Promise<void> {
   root.innerHTML = '<div class="text-muted">Loading screening…</div>';
   let detail: ScreeningDetail;
   try {
@@ -200,13 +211,15 @@ async function renderScreening(root: HTMLElement, screeningId: string): Promise<
   root.appendChild(jdSection(screeningId, detail));
   const resumeSection = uploadSection(screeningId, detail);
   root.appendChild(resumeSection.node);
-  root.appendChild(stageSection(screeningId, detail));
+  root.appendChild(stageSection(screeningId, detail, initialStage));
 }
 
 // -- step 1 + 2: JD intake and checklists -----------------------------------
 
 function jdSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
   const card = new CollapsibleCard("1 · Position description → qualification checklist");
+  card.card.dataset.panel = "checklist";
+  card.card.addEventListener("set-panel", (event) => card.setCollapsed(!(event as CustomEvent).detail));
   const body = card.body;
 
   function summarize(qualifications: { kind: string }[], confirmed: boolean): void {
@@ -264,6 +277,8 @@ function jdSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
 
 function uploadSection(screeningId: string, detail: ScreeningDetail) {
   const card = new CollapsibleCard("2 · Resumes and evaluation");
+  card.card.dataset.panel = "resumes";
+  card.card.addEventListener("set-panel", (event) => card.setCollapsed(!(event as CustomEvent).detail));
   const body = card.body;
 
   const zone = el(
@@ -382,7 +397,7 @@ function uploadSection(screeningId: string, detail: ScreeningDetail) {
 
 // -- step 4: stage tabs, grids, chat ----------------------------------------
 
-function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement {
+function stageSection(screeningId: string, detail: ScreeningDetail, initialStage: Stage): HTMLElement {
   const card = el("div", "card");
   card.appendChild(el("div", "card-header fw-semibold", "3 · Staged review"));
   const body = el("div", "card-body");
@@ -424,6 +439,42 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
   let chat: ChatPanel | null = null;
   let current: Stage = "1";
   let stopPolling: (() => void) | undefined;
+  let selectionVersion = 0;
+
+  async function applyChatAction(action: GridAction): Promise<void> {
+    if (!card.isConnected) return;
+    if (action.type === "grid") { grid?.applyGridAction(action); return; }
+    const args = action.args ?? {};
+    if (action.tool === "refresh") {
+      if (args.jobId) {
+        const progress = el("div", "mt-2");
+        card.appendChild(progress);
+        showProgress(progress, args.jobId, { onDone: () => window.dispatchEvent(new HashChangeEvent("hashchange")) });
+      } else {
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      }
+    } else if (action.tool === "navigate") {
+      if (args.page === "screening" && (!args.screeningId || args.screeningId === screeningId)) {
+        await select(args.stage ?? "1");
+      } else {
+        const routes: Record<string, string> = { screenings: "#/", config: "#/config", audit: "#/audit",
+          screening: `#/screening/${args.screeningId || screeningId}/${args.stage || "1"}` };
+        window.location.hash = routes[args.page!] ?? "#/";
+      }
+    } else if (action.tool === "set_panel") {
+      if (args.panel === "chat") setChatCollapsed(!args.open);
+      else if (args.panel === "evidence") evidenceHost.innerHTML = "";
+      else if (args.panel === "history") {
+        const history = trail.querySelector("details");
+        if (history) history.open = !!args.open;
+      } else {
+        document.querySelector(`[data-panel="${args.panel}"]`)?.dispatchEvent(new CustomEvent("set-panel", { detail: args.open }));
+      }
+    } else {
+      if (args.stage && args.stage !== current) await select(args.stage);
+      grid?.applyAppAction(action);
+    }
+  }
 
   function paintCounts(next: Record<string, number>): void {
     Object.assign(counts, next);
@@ -434,24 +485,29 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
   }
 
   async function select(stage: Stage): Promise<void> {
+    if (!STAGES.includes(stage)) stage = "1";
+    const version = ++selectionVersion;
+    stopPolling?.();
     current = stage;
     for (const [key, node] of tabButtons) {
       node.classList.toggle("active", key === stage);
     }
     evidenceHost.innerHTML = "";
     grid?.destroy();
-    grid = new StageGrid(gridHost, screeningId, stage, paintCounts);
-    await grid.refresh();
+    const nextGrid = new StageGrid(gridHost, screeningId, stage, paintCounts);
+    grid = nextGrid;
+    await nextGrid.refresh();
+    if (version !== selectionVersion || !card.isConnected) { nextGrid.destroy(); return; }
 
-    chat = new ChatPanel(chatHost, screeningId, stage, (action) => grid?.applyGridAction(action), {
+    chat = new ChatPanel(chatHost, screeningId, stage, applyChatAction, {
       onCollapse: setChatCollapsed,
     });
     const session = await chat.load();
 
     // Poll the action queue so a question asked in the pop-out window still
     // sorts and filters this grid.
-    stopPolling?.();
-    stopPolling = session ? followGridActions(session, (a) => grid?.applyGridAction(a)) : undefined;
+    if (version !== selectionVersion || !card.isConnected) return;
+    stopPolling = session ? followGridActions(session, (a) => chat?.handleAction(a)) : undefined;
   }
 
   for (const stage of STAGES) {
@@ -476,12 +532,20 @@ function stageSection(screeningId: string, detail: ScreeningDetail): HTMLElement
 
   card.appendChild(body);
 
-  document.addEventListener("stages-changed", () => {
+  const stagesChanged = () => {
+    if (!card.isConnected) return;
     void select(current);
     void renderAuditTrail(trail, screeningId);
-  });
+  };
+  document.addEventListener("stages-changed", stagesChanged);
+  window.addEventListener("hashchange", () => {
+    selectionVersion++;
+    stopPolling?.();
+    grid?.destroy();
+    document.removeEventListener("stages-changed", stagesChanged);
+  }, { once: true });
 
-  void select("1");
+  void select(initialStage);
   return card;
 }
 

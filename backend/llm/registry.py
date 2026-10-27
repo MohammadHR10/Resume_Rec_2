@@ -21,12 +21,6 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
 
 PROVIDER_LABELS = {ULPROXY_NAME: ULPROXY_LABEL, FASTLLM_NAME: FASTLLM_LABEL}
 
-#: Chat mode assumed for a model when config says nothing. The claude/codex CLI
-#: harnesses are only expected to work against the UL proxy (open item #2), so
-#: fastLLM models default to the in-code structured loop.
-DEFAULT_CHAT_MODE = {ULPROXY_NAME: "harness", FASTLLM_NAME: "structured"}
-
-
 def get_provider(name: str, model: str = "") -> LLMProvider:
     cls = PROVIDERS.get(name)
     if cls is None:
@@ -43,12 +37,8 @@ def active() -> tuple[LLMProvider, str, str]:
 
 
 def chat_mode(provider_name: str, model: str) -> str:
-    """``harness`` or ``structured`` for this model, per config then default."""
-    cfg = db.get_config()
-    modes: dict[str, str] = cfg.get("chat_modes") or {}
-    return modes.get(f"{provider_name}:{model}") or DEFAULT_CHAT_MODE.get(
-        provider_name, "structured"
-    )
+    """All models use the restricted tool loop, including legacy harness settings."""
+    return "structured"
 
 
 def describe_all() -> list[dict[str, Any]]:

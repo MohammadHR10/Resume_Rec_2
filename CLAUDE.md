@@ -58,8 +58,7 @@ docker compose up --build       # http://localhost:8000
   Config is a key/value table holding JSON, including the `connections` key, which **may
   hold a provider bearer token** entered on the configuration page. A stored value overrides
   the environment. The token is write-only over the API — `GET /api/config` returns only
-  `hasKey` and a masked hint — and `chat/workspace.py` strips the `config` table from the
-  database copy handed to a chat harness. If you add another consumer of the database file,
+  `hasKey` and a masked hint — and chat workspaces never receive a database copy. If you add another consumer of the database file,
   check whether it needs the same treatment.
 - **`llm/`** — `base.py` holds the provider interface (`structured_extract`, `chat`) and the
   shared OpenAI-compatible client with retry/backoff, strict-schema coercion, and an
@@ -71,10 +70,13 @@ docker compose up --build       # http://localhost:8000
 - **`pipeline.py`** — the core. `evaluate_resume` (one LLM call per candidate),
   `compute_rollups`, `rank_candidates`, batching with progress, and `load_rows` (the one
   query everything reads a screening through).
-- **`chat/`** — `session.py` picks the mode and degrades a failed harness turn to structured
-  *for that turn*; `workspace.py` builds the per-session scratch dir (snapshot, brief, copied
-  tools, action queue); `structured.py` is the in-code agentic loop; `adapters/` are the CLI
-  seams; `tools/` are standalone scripts run identically by both modes.
+- **`chat/`** — `session.py` serializes turns; `structured.py` enforces allowlisted tool-only
+  responses including `reply`; `app_tools.py` validates app controls and persists human-reviewed
+  write proposals. `workspace.py` creates screening-scoped snapshots without a database copy.
+  `candidate_data.py` supplies the three read-only research tools: validated subset filters,
+  source/verdict paging and batch reads, and deterministic cohort aggregation/comparison.
+  Analysis scripts use the same deterministic ranking code. Legacy CLI adapters are unreachable
+  from chat. See `docs/agent-tools.md` for the capability catalog.
 - **`audit.py`** — corpus pairing, delta computation, per-attribute aggregation, pass/fail.
 - **`export.py`** — styled Excel and CSV per stage grid.
 
@@ -100,14 +102,24 @@ Vanilla TypeScript, no framework. `main.ts` is a hash router plus the screening 
 - **`candidate_key` has two modes.** `LastName, FirstName …` filenames group a resume and a
   cover letter together; everything else uses the whole stem, because truncating names like
   `Resume_31_(BG1_R1)Ayaan_Rahman` would collide every audit variant.
-- **Chat tools import the real ranking code.** The copied tools in a workspace find
-  `backend/` through a generated `tools/_bootstrap.py`. That is what makes what-if a true
-  recompute rather than a second implementation that can drift.
-- **Grid actions travel by file.** `grid_action.py` appends to `actions.jsonl` in the
-  workspace; the backend drains it into `chat_action` after each turn. No credentials needed
-  inside the workspace, and it works identically in both chat modes.
+- **Chat tools import the real ranking code.** The dispatcher runs fixed installed scripts,
+  not writable workspace copies. What-if remains a true recompute.
+- **App actions are ordered and have stable IDs.** The session collects grid and app actions
+  in call order; the browser deduplicates response/poll delivery and stops polling on navigation.
+- **Human approval is an app boundary.** `chat_proposal` persists exact proposed data changes;
+  the model cannot approve them. Application rechecks current data and claims approval once.
 - **The audit strips the corpus's construction marker** (`◆ BG1/R1`) before evaluating.
   Without that, every variant carries one identical artifact no baseline has.
+- **The SIS gateway's GPT-OSS models are worked around in `fastllm.py`, not in prompts.**
+  They are served by vLLM with no harmony tool-call parser, so when the model ends a turn
+  on a harmony tool call the gateway drops it: `content` comes back `null` with no
+  `tool_calls`, and `stop_reason` 200012 is the only tell. Three things answer that, all
+  scoped to this provider — a system suffix telling it to answer in the final channel, the
+  schema in the prompt instead of `response_format` (which the gateway accepts and then
+  ignores, never 400ing, so the client's auto-demotion never fires), and a seed that moves
+  on retry so an attempt is a new draw rather than a replay of the same failure. It gets a
+  chat turn from never succeeding to roughly 5 in 6. Delete all of it once SIS enables
+  vLLM's `--tool-call-parser`.
 
 ## Currently open
 
@@ -116,6 +128,3 @@ Vanilla TypeScript, no framework. `main.ts` is a hash router plus the screening 
   `hl-requester-id` headers, pinned `seed`, models named like `GPT 120b`). Only the URL and
   key values are still missing. Model listing is unproven — the old client never listed, so
   `/v1/models` may 404 and the config page falls back to a free-text model field.
-- **Neither CLI harness is installed in the image.** `chat_mode: harness` therefore degrades
-  to structured on every turn (surfaced in the UI). Adding `claude` or `codex` to the
-  Dockerfile plus proxy credentials is all that is missing.

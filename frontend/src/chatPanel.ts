@@ -7,8 +7,9 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-import { askChat, getChat } from "./api.ts";
-import type { GridAction, Stage } from "./types.ts";
+import { askChat, getChat, consumeAction, initializeActionCursor, resolveProposal, exportUrl, parseJobDescription, uploadResumes } from "./api.ts";
+import { showProgress } from "./progress.ts";
+import type { ChatProposal, GridAction, Stage } from "./types.ts";
 import { el, escapeHtml, formatDate, notify } from "./ui.ts";
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -39,10 +40,10 @@ function summarizeError(message: string): string {
 }
 
 const SUGGESTIONS = [
-  "Why is the top candidate ranked above the second?",
-  "Why did so many candidates make it past this stage?",
+  "What does the top candidate’s resume say about their experience?",
+  "Compare the top candidates against required and preferred qualifications.",
+  "Group this stage’s candidates by recommendation and explain what they missed.",
   "What happens to the list if we drop the degree requirement?",
-  "Sort by preferred coverage, highest first.",
 ];
 
 export class ChatPanel {
@@ -50,10 +51,12 @@ export class ChatPanel {
   private input!: HTMLTextAreaElement;
   private sendButton!: HTMLButtonElement;
   private modeBadge!: HTMLElement;
+  private proposalsHost!: HTMLElement;
+  private sessionId = "";
   private readonly root: HTMLElement;
   private readonly screeningId: string;
   private readonly stage: Stage;
-  private readonly onGridAction: (action: GridAction) => void;
+  private readonly onGridAction: (action: GridAction) => void | Promise<void>;
   /** Told when the user collapses or pops the panel out. */
   private readonly onCollapse?: (collapsed: boolean) => void;
   /** True in the pop-out window, where collapsing and popping out again make no sense. */
@@ -63,7 +66,7 @@ export class ChatPanel {
     root: HTMLElement,
     screeningId: string,
     stage: Stage,
-    onGridAction: (action: GridAction) => void,
+    onGridAction: (action: GridAction) => void | Promise<void>,
     options: { onCollapse?: (collapsed: boolean) => void; standalone?: boolean } = {},
   ) {
     this.root = root;
@@ -80,7 +83,7 @@ export class ChatPanel {
     const card = el("div", "card h-100");
 
     const header = el("div", "card-header d-flex justify-content-between align-items-center gap-2");
-    header.appendChild(el("span", "fw-semibold me-auto", "Ask about this stage"));
+    header.appendChild(el("span", "fw-semibold me-auto", "Screening assistant"));
     this.modeBadge = el("span", "badge text-bg-light border", "…");
     header.appendChild(this.modeBadge);
 
@@ -108,6 +111,8 @@ export class ChatPanel {
 
     this.log = el("div", "card-body chat-log");
     card.appendChild(this.log);
+    this.proposalsHost = el("div", "px-3");
+    card.appendChild(this.proposalsHost);
 
     const footer = el("div", "card-footer");
     const suggestions = el("div", "d-flex flex-wrap gap-1 mb-2");
@@ -124,7 +129,7 @@ export class ChatPanel {
     const group = el("div", "input-group");
     this.input = el("textarea", "form-control") as HTMLTextAreaElement;
     this.input.rows = 2;
-    this.input.placeholder = "Ask anything about these candidates…";
+    this.input.placeholder = "Ask about candidates or control the app…";
     this.input.addEventListener("keydown", (event) => {
       const keyboard = event as KeyboardEvent;
       if (keyboard.key === "Enter" && !keyboard.shiftKey) {
@@ -146,6 +151,9 @@ export class ChatPanel {
   async load(): Promise<string | null> {
     try {
       const payload = await getChat(this.screeningId, this.stage);
+      this.sessionId = payload.sessionId;
+      initializeActionCursor(payload.sessionId, payload.actionCursor);
+      this.renderProposals(payload.proposals);
       this.setMode(payload.mode, payload.model);
       this.log.innerHTML = "";
       if (payload.messages.length === 0) {
@@ -153,7 +161,7 @@ export class ChatPanel {
           el(
             "p",
             "text-muted small fst-italic",
-            "Ask why someone ranks where they do, why a stage let so many through, or what happens if a qualification is dropped.",
+            "Ask about resume details, verdict explanations, candidate comparisons, or any group of applicants.",
           ),
         );
       }
@@ -167,12 +175,9 @@ export class ChatPanel {
     }
   }
 
-  private setMode(mode: string, model: string): void {
-    this.modeBadge.textContent = `${mode === "harness" ? "Independent" : "Guided"} · ${model || "no model"}`;
-    this.modeBadge.title =
-      mode === "harness"
-        ? "Independent — the assistant explores the screening data itself."
-        : "Guided — the app runs a fixed set of analyses on the assistant's behalf.";
+  private setMode(_mode: string, model: string): void {
+    this.modeBadge.textContent = `App tools · ${model || "no model"}`;
+    this.modeBadge.title = "The assistant uses app controls. Review proposed changes before applying them.";
   }
 
   private append(role: string, content: string, mode = "", timestamp = ""): HTMLElement {
@@ -201,6 +206,7 @@ export class ChatPanel {
   }
 
   private async send(): Promise<void> {
+    if (this.sendButton.disabled) return;
     const question = this.input.value.trim();
     if (!question) return;
     this.input.value = "";
@@ -233,11 +239,9 @@ export class ChatPanel {
           ),
         );
       }
+      this.renderProposals(turn.proposals);
       for (const action of turn.actions ?? []) {
-        this.onGridAction(action);
-      }
-      if (turn.actions?.length) {
-        bubble.appendChild(el("div", "chat-note text-muted", "Applied to the grid."));
+        await consumeAction(this.sessionId, action, (a) => this.handleAction(a));
       }
       this.setMode(turn.mode, turn.model);
     } catch (error) {
@@ -246,9 +250,101 @@ export class ChatPanel {
       // than a raw payload, but a chat window must never become a dump of
       // whatever a model happened to emit.
       this.append("assistant", summarizeError((error as Error).message), "error");
+      const current = await getChat(this.screeningId, this.stage).catch(() => null);
+      if (current) this.renderProposals(current.proposals);
     } finally {
       this.sendButton.disabled = false;
       this.log.scrollTop = this.log.scrollHeight;
+    }
+  }
+
+  private renderProposals(proposals: ChatProposal[]): void {
+    this.proposalsHost.innerHTML = "";
+    for (const proposal of proposals ?? []) {
+      if (proposal.status !== "pending") continue;
+      const card = el("div", "border rounded p-2 mb-2 bg-light");
+      card.appendChild(el("strong", "d-block", escapeHtml(proposal.label)));
+      const details = el("div", "small my-2");
+      for (const [key, value] of Object.entries(proposal.args)) {
+        if (key === "candidateIds" || value === null || value === "") continue;
+        const text = key === "qualifications"
+          ? (value as { kind: string; text: string }[]).map(q => `${q.kind}: ${q.text}`).join("\n")
+          : `${key}: ${String(value)}`;
+        const line = el("div");
+        line.style.whiteSpace = "pre-wrap";
+        line.textContent = text;
+        details.appendChild(line);
+      }
+      card.appendChild(details);
+      card.appendChild(el("div", "small text-muted mb-2", "Awaiting your review. No change has been made."));
+      const apply = el("button", "btn btn-sm btn-primary me-2", "Apply change") as HTMLButtonElement;
+      const cancel = el("button", "btn btn-sm btn-outline-secondary", "Cancel") as HTMLButtonElement;
+      const resolve = async (approve: boolean) => {
+        apply.disabled = cancel.disabled = true;
+        try {
+          const result = await resolveProposal(this.sessionId, proposal.id, approve);
+          card.replaceChildren(el("div", "small", approve ? "Change applied." : "Change cancelled."));
+          if (!approve) return;
+          if (result.result?.jobId) {
+            const progress = el("div");
+            card.appendChild(progress);
+            showProgress(progress, result.result.jobId, {
+              onDone: () => window.dispatchEvent(new HashChangeEvent("hashchange")),
+            });
+          } else if (proposal.tool === "delete_screening") {
+            try { localStorage.setItem("screening-uploaded", JSON.stringify({ screeningId: this.screeningId, deleted: true, at: Date.now() })); } catch { /* Storage unavailable. */ }
+            window.location.hash = "#/";
+          } else if (result.result?.screeningId || (proposal.tool === "create_screening" && result.result?.id)) {
+            window.location.hash = `#/screening/${result.result.screeningId || result.result.id}`;
+          } else {
+            window.dispatchEvent(new HashChangeEvent("hashchange"));
+          }
+        } catch (error) {
+          card.appendChild(el("div", "text-danger small mt-2", escapeHtml((error as Error).message)));
+        }
+      };
+      apply.addEventListener("click", () => void resolve(true));
+      cancel.addEventListener("click", () => void resolve(false));
+      card.append(apply, cancel);
+      this.proposalsHost.appendChild(card);
+    }
+  }
+
+  async handleAction(action: GridAction): Promise<void> {
+    const args = action.args ?? {};
+    if (action.tool === "export_stage") {
+      const link = el("a", "btn btn-sm btn-outline-success my-2", `Download stage ${args.stage} ${args.format?.toUpperCase()}`) as HTMLAnchorElement;
+      link.href = exportUrl(this.screeningId, args.stage!, args.format!);
+      this.log.appendChild(link);
+    } else if (action.tool === "upload_documents") {
+      const container = el("div", "border rounded p-2 my-2");
+      const jd = args.kind === "position_description";
+      container.appendChild(el("p", "small", jd
+        ? "Choose a position description to parse. This replaces the qualification checklist and clears evaluations."
+        : "Choose resumes to upload. This replaces the current candidate set."));
+      const input = el("input", "form-control form-control-sm") as HTMLInputElement;
+      input.type = "file";
+      input.accept = jd ? ".pdf,.docx,.txt,.md" : ".pdf,.zip";
+      input.multiple = !jd;
+      input.setAttribute("aria-label", jd ? "Choose position description" : "Choose resumes");
+      const upload = el("button", "btn btn-sm btn-primary mt-2", jd ? "Parse selected document" : "Upload selected resumes") as HTMLButtonElement;
+      upload.addEventListener("click", async () => {
+        if (!input.files?.length) return;
+        upload.disabled = true;
+        try {
+          if (jd) await parseJobDescription(this.screeningId, input.files[0]!);
+          else await uploadResumes(this.screeningId, Array.from(input.files));
+          try { localStorage.setItem("screening-uploaded", JSON.stringify({ screeningId: this.screeningId, at: Date.now() })); } catch { /* Storage unavailable. */ }
+          window.dispatchEvent(new HashChangeEvent("hashchange"));
+        } catch (error) {
+          notify((error as Error).message, "danger");
+          upload.disabled = false;
+        }
+      });
+      container.append(input, upload);
+      this.log.appendChild(container);
+    } else {
+      await this.onGridAction(action);
     }
   }
 }

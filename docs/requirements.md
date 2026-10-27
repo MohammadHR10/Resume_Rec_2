@@ -28,13 +28,20 @@ Rebuild Resume_Rec_2 as a **FastAPI + TypeScript staged resume-screening app**, 
 - Columns: candidate, AI recommendation, required N/M, preferred N/M, one color-coded column per qualification (evidence on hover/click), stage actions.
 - Each stage grid keeps a **styled Excel export button** (plus CSV) — export is secondary, not the primary flow.
 
-### 5. Per-stage chat — agentic harness first, structured fallback
-- One chat panel per stage. It must handle **open-ended analytical questions**, not just predictable commands: "why is A ranked higher than B?", "why did so many make it past this stage?", "if we remove qual X, what happens to the list?"
-- **Mode A (harness):** capable models drive a full CLI harness (Claude CLI / Codex CLI) with a scoped workspace containing a read-only screening snapshot and stateless analysis tools — per the `hive-edge-minds` repo's `mind_templates/` adapter pattern.
-- **Mode B (structured fallback):** small open-weight models (SIS) get a mini agentic loop in our code — strict-JSON `{tool_calls, answer}` turns where the backend executes the **same tools** on the model's behalf.
-- What-if analysis is a **deterministic recompute** (ranking math is code), never an LLM guess.
-- Chat can also drive the grid: sort/filter/clear actions flow to the frontend regardless of mode.
-- Per-model `chat_mode` config; a failed harness turn degrades to structured for that turn. If SIS models prove they can drive the harness, switching them is a config flip — the tools are shared.
+### 5. Per-stage app agent — tool use only
+- All providers/models use the backend's allowlisted tool dispatcher; CLI harness settings cannot enable command execution.
+- Every model response contains tool calls. User-facing explanations use `reply`; no prose-only fallback.
+- Analyses and what-if calculations reuse deterministic ranking and rollup code.
+- Three flexible research tools support compound candidate filters; extracted resume/cover-letter
+  text, evidence and recorded reasoning; individual comparisons and custom/grouped cohorts.
+  Counts cover full subsets regardless of pagination, overlapping groups are explicit, and missing
+  evaluations/verdicts are distinguished from failures. Source text and model assessments remain distinct.
+- Expose human-facing controls as tools: screening/stage navigation, sorting/filtering/selection, evidence, panels, exports, file selection, checklist editing/confirmation, evaluations, candidate moves, screening creation/deletion, model selection, and bias audit operations.
+- Persistent review cards gate data changes. A reviewer applies or cancels; the agent has no approval tool. Revalidate current data and reject stale or duplicate approvals.
+- Candidate moves retain the human decision/override audit trail. Validate the full selection atomically against the source stage.
+- App actions have stable IDs and apply in tool-call order, including when chat is popped out. Expose the actual grid selection to chat.
+- Local files require a user file chooser. Provider credentials remain on the Configuration page and are never exposed to the agent.
+- See `agent-tools.md` for the implemented capability catalog and deliberate boundaries.
 
 ### 6. Bias audit — built-in, re-runnable
 - The `test-resumes/SWE_pdf/` corpus contains baseline resumes plus duplicate variants with injected protected-class information (filename codes like `(BG1_G1)`, `(BS2_R2)`, `(BE1_RA1)`).
